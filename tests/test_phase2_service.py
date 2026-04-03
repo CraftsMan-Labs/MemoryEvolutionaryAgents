@@ -20,6 +20,7 @@ from memory_evolutionary_agents.phase2.extraction_service import (
 )
 from memory_evolutionary_agents.phase2.errors import WorkflowExecutionError
 from memory_evolutionary_agents.phase2.service import Phase2IngestionService
+from memory_evolutionary_agents.phase2.service import _extract_usage
 from memory_evolutionary_agents.phase2.service import _is_retryable_failure
 
 
@@ -141,6 +142,34 @@ class Phase2ServiceTestCase(unittest.TestCase):
                 WorkflowExecutionError("workflow execution timed out after 90s")
             )
         )
+
+    def test_extract_usage_reads_total_token_fields(self) -> None:
+        usage = _extract_usage(
+            {
+                "total_input_tokens": 123,
+                "total_output_tokens": 45,
+            }
+        )
+        self.assertEqual(usage.input_tokens, 123)
+        self.assertEqual(usage.output_tokens, 45)
+
+    def test_extract_usage_reads_llm_node_metrics(self) -> None:
+        usage = _extract_usage(
+            {
+                "llm_node_metrics": {
+                    "extract_structured_memory": {
+                        "prompt_tokens": 20,
+                        "completion_tokens": 30,
+                    },
+                    "classify_memory": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 15,
+                    },
+                }
+            }
+        )
+        self.assertEqual(usage.input_tokens, 30)
+        self.assertEqual(usage.output_tokens, 45)
 
 
 if __name__ == "__main__":

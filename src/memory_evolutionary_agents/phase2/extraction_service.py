@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from .contracts import (
     ChunkRecord,
     EmbeddingRecord,
@@ -15,13 +17,16 @@ class WorkflowExtractionService:
     ) -> StructuredMemoryResult:
         raw = execution_result.raw_output
         terminal = raw.get("terminal_output")
+        outputs = raw.get("outputs")
         nodes = raw.get("nodes")
-        if isinstance(terminal, dict):
+        if isinstance(terminal, dict) and _looks_like_memory_payload(terminal):
             return self._from_terminal(terminal)
+        if isinstance(outputs, dict):
+            return self._from_nodes(outputs)
         if isinstance(nodes, dict):
             return self._from_nodes(nodes)
         raise WorkflowExecutionError(
-            "workflow output missing terminal_output and nodes"
+            "workflow output missing terminal_output, outputs, and nodes"
         )
 
     def _from_terminal(self, terminal: dict[str, object]) -> StructuredMemoryResult:
@@ -66,12 +71,30 @@ class WorkflowExtractionService:
 
 def _node_output(nodes: dict[str, object], node_id: str) -> dict[str, object]:
     node = nodes.get(node_id)
-    if isinstance(node, dict) is False:
+    if not isinstance(node, dict):
         raise WorkflowExecutionError(f"workflow output missing node: {node_id}")
-    output = node.get("output")
-    if isinstance(output, dict) is False:
+    node_dict = cast(dict[str, object], node)
+    output = node_dict.get("output")
+    if not isinstance(output, dict):
         raise WorkflowExecutionError(f"workflow node missing output: {node_id}")
-    return output
+    return cast(dict[str, object], output)
+
+
+def _looks_like_memory_payload(terminal: dict[str, object]) -> bool:
+    memory_keys = {
+        "project",
+        "problem",
+        "solution",
+        "date",
+        "confidence",
+        "tags",
+        "entities",
+        "obsidian_note_path",
+        "qdrant_point_ids",
+        "chunks",
+        "embeddings",
+    }
+    return any(key in terminal for key in memory_keys)
 
 
 def _optional_str(value: object) -> str | None:
@@ -95,10 +118,11 @@ def _optional_float(value: object, default: float) -> float:
 def _string_list(value: object) -> list[str]:
     if value is None:
         return []
-    if isinstance(value, list) is False:
+    if not isinstance(value, list):
         raise WorkflowExecutionError("expected list of strings in workflow output")
+    items = cast(list[object], value)
     result: list[str] = []
-    for item in value:
+    for item in items:
         if isinstance(item, str) is False:
             raise WorkflowExecutionError("expected list of strings in workflow output")
         result.append(item)
@@ -108,10 +132,11 @@ def _string_list(value: object) -> list[str]:
 def _chunk_list(value: object) -> list[ChunkRecord]:
     if value is None:
         return []
-    if isinstance(value, list) is False:
+    if not isinstance(value, list):
         raise WorkflowExecutionError("expected list of chunks in workflow output")
+    items = cast(list[object], value)
     chunks: list[ChunkRecord] = []
-    for item in value:
+    for item in items:
         if isinstance(item, dict) is False:
             raise WorkflowExecutionError("expected chunk object in workflow output")
         chunks.append(ChunkRecord.model_validate(item))
@@ -121,10 +146,11 @@ def _chunk_list(value: object) -> list[ChunkRecord]:
 def _embedding_list(value: object) -> list[EmbeddingRecord]:
     if value is None:
         return []
-    if isinstance(value, list) is False:
+    if not isinstance(value, list):
         raise WorkflowExecutionError("expected list of embeddings in workflow output")
+    items = cast(list[object], value)
     records: list[EmbeddingRecord] = []
-    for item in value:
+    for item in items:
         if isinstance(item, dict) is False:
             raise WorkflowExecutionError("expected embedding object in workflow output")
         records.append(EmbeddingRecord.model_validate(item))

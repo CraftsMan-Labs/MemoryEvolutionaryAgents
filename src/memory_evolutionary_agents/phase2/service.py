@@ -394,12 +394,6 @@ class Phase2IngestionService:
     def _write_obsidian_summary(
         self, request: IngestWorkflowInput, extraction: StructuredMemoryResult
     ) -> str | None:
-        if (
-            extraction.project is None
-            and extraction.problem is None
-            and extraction.solution is None
-        ):
-            return extraction.obsidian_note_path
         title = extraction.project or "Memory Summary"
         body = f"Problem: {extraction.problem or 'n/a'}\nSolution: {extraction.solution or 'n/a'}"
         write_response = self._obsidian_adapter.write_summary(
@@ -446,15 +440,53 @@ class _UsageSummary:
 
 
 def _extract_usage(raw_output: dict[str, object]) -> _UsageSummary:
+    totals_usage = _extract_usage_from_totals(raw_output)
+    if totals_usage is not None:
+        return totals_usage
+
     usage = raw_output.get("usage")
     if isinstance(usage, dict):
         return _extract_usage_from_dict(usage)
+
+    llm_node_metrics = raw_output.get("llm_node_metrics")
+    if isinstance(llm_node_metrics, dict):
+        metrics_usage = _extract_usage_from_llm_node_metrics(llm_node_metrics)
+        if metrics_usage is not None:
+            return metrics_usage
+
     for value in raw_output.values():
         if isinstance(value, dict) and "usage" in value:
             nested_usage = value.get("usage")
             if isinstance(nested_usage, dict):
                 return _extract_usage_from_dict(nested_usage)
     return _UsageSummary(input_tokens=0, output_tokens=0)
+
+
+def _extract_usage_from_totals(raw_output: dict[str, object]) -> _UsageSummary | None:
+    input_tokens = _to_non_negative_int(raw_output.get("total_input_tokens"))
+    output_tokens = _to_non_negative_int(raw_output.get("total_output_tokens"))
+    if input_tokens > 0 or output_tokens > 0:
+        return _UsageSummary(input_tokens=input_tokens, output_tokens=output_tokens)
+    return None
+
+
+def _extract_usage_from_llm_node_metrics(
+    llm_node_metrics: dict[str, object],
+) -> _UsageSummary | None:
+    input_tokens = 0
+    output_tokens = 0
+    found_metric = False
+    for value in llm_node_metrics.values():
+        if isinstance(value, dict) is False:
+            continue
+        found_metric = True
+        input_tokens += _to_non_negative_int(value.get("prompt_tokens"))
+        output_tokens += _to_non_negative_int(value.get("completion_tokens"))
+    if found_metric is False:
+        return None
+    if input_tokens > 0 or output_tokens > 0:
+        return _UsageSummary(input_tokens=input_tokens, output_tokens=output_tokens)
+    return None
 
 
 def _extract_usage_from_dict(usage: dict[str, Any]) -> _UsageSummary:

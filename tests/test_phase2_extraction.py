@@ -63,6 +63,71 @@ class Phase2ExtractionServiceTestCase(unittest.TestCase):
                 )
             )
 
+    def test_extracts_from_outputs_when_terminal_is_telemetry(self) -> None:
+        service = WorkflowExtractionService()
+        result = service.extract(
+            WorkflowExecutionResult(
+                status=WorkflowStatus.SUCCESS,
+                raw_output={
+                    "terminal_output": {
+                        "correlation_id": "abc-123",
+                        "status": "success",
+                        "emitted": True,
+                    },
+                    "outputs": {
+                        "extract_structured_memory": {
+                            "output": {
+                                "project": "Atlas",
+                                "problem": "Parser failure",
+                                "solution": "Normalize paths",
+                                "date": "2026-04-03",
+                                "confidence": 0.9,
+                            }
+                        },
+                        "classify_memory": {
+                            "output": {
+                                "tags": ["parser", "reliability"],
+                                "entities": ["Atlas"],
+                                "confidence": 0.8,
+                            }
+                        },
+                        "chunk_document": {
+                            "output": {
+                                "chunks": [
+                                    {
+                                        "chunk_id": "c1",
+                                        "chunk_index": 0,
+                                        "text": "text",
+                                        "start_offset": 0,
+                                        "end_offset": 4,
+                                    }
+                                ]
+                            }
+                        },
+                        "embed_chunks": {
+                            "output": {
+                                "embeddings": [
+                                    {
+                                        "chunk_id": "c1",
+                                        "vector": [0.1, 0.2],
+                                        "model_name": "test-model",
+                                    }
+                                ]
+                            }
+                        },
+                        "upsert_qdrant": {"output": {"qdrant_point_ids": ["c1"]}},
+                        "write_obsidian_summary": {
+                            "output": {
+                                "obsidian_note_path": "memory-agent-summaries/c1.md"
+                            }
+                        },
+                    },
+                },
+            )
+        )
+        self.assertEqual(result.project, "Atlas")
+        self.assertEqual(result.qdrant_point_ids, ["c1"])
+
 
 if __name__ == "__main__":
     unittest.main()
