@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -107,16 +108,19 @@ class _FakePhase3Service:
 
 def _build_container(phase3_service: _FakePhase3Service | None) -> AppContainer:
     return AppContainer(
-        settings=None,
-        database=None,
-        source_registry=None,
-        run_tracking=None,
-        onboarding=_FakeOnboarding(completed=True),
-        scanner=None,
-        scheduler=None,
-        phase2_ingestion=None,
-        phase3_ontology=phase3_service,
-        phase4_chat=None,
+        settings=cast(Any, None),
+        database=cast(Any, None),
+        source_registry=cast(Any, None),
+        run_tracking=cast(Any, None),
+        onboarding=cast(Any, _FakeOnboarding(completed=True)),
+        scanner=cast(Any, None),
+        scheduler=cast(Any, None),
+        phase2_ingestion=cast(Any, None),
+        phase3_ontology=cast(Any, phase3_service),
+        phase4_chat=cast(Any, None),
+        phase5_telemetry=None,
+        phase5_status=None,
+        phase6_progress=cast(Any, None),
     )
 
 

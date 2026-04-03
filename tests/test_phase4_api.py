@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any, cast
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -45,16 +46,19 @@ class _FakeChatService:
 
 def _container(chat_service: _FakeChatService | None) -> AppContainer:
     return AppContainer(
-        settings=None,
-        database=None,
-        source_registry=None,
-        run_tracking=None,
-        onboarding=_FakeOnboarding(),
-        scanner=None,
-        scheduler=None,
-        phase2_ingestion=None,
-        phase3_ontology=None,
-        phase4_chat=chat_service,
+        settings=cast(Any, None),
+        database=cast(Any, None),
+        source_registry=cast(Any, None),
+        run_tracking=cast(Any, None),
+        onboarding=cast(Any, _FakeOnboarding()),
+        scanner=cast(Any, None),
+        scheduler=cast(Any, None),
+        phase2_ingestion=cast(Any, None),
+        phase3_ontology=cast(Any, None),
+        phase4_chat=cast(Any, chat_service),
+        phase5_telemetry=None,
+        phase5_status=None,
+        phase6_progress=cast(Any, None),
     )
 
 
