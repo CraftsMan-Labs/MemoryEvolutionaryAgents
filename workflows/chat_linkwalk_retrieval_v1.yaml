@@ -1,0 +1,17 @@
+id: chat-linkwalk-retrieval-v1
+version: 1.0.0
+entry_node: retrieve_linkwalk_context
+
+nodes:
+  - id: retrieve_linkwalk_context
+    node_type:
+      custom_worker:
+        handler: retrieve_linkwalk_context
+        handler_file: ../src/memory_evolutionary_agents/phase4/workflow_handlers.py
+    config:
+      payload:
+        query: "{{ input.query }}"
+        filters: "{{ input.filters }}"
+        seed_note_paths: "{{ input.seed_note_paths }}"
+        link_depth: "{{ input.link_depth }}"
+        link_fanout: "{{ input.link_fanout }}"

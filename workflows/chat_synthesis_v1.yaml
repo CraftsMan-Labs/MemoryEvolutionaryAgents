@@ -1,0 +1,16 @@
+id: chat-synthesis-v1
+version: 1.0.0
+entry_node: synthesize_chat_answer
+
+nodes:
+  - id: synthesize_chat_answer
+    node_type:
+      custom_worker:
+        handler: synthesize_chat_answer
+        handler_file: ../src/memory_evolutionary_agents/phase4/workflow_handlers.py
+    config:
+      payload:
+        query: "{{ input.query }}"
+        top_k: "{{ input.top_k }}"
+        vector_results: "{{ input.vector_results }}"
+        linkwalk_results: "{{ input.linkwalk_results }}"

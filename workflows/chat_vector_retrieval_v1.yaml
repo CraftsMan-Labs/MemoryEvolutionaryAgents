@@ -1,0 +1,15 @@
+id: chat-vector-retrieval-v1
+version: 1.0.0
+entry_node: retrieve_vector_context
+
+nodes:
+  - id: retrieve_vector_context
+    node_type:
+      custom_worker:
+        handler: retrieve_vector_context
+        handler_file: ../src/memory_evolutionary_agents/phase4/workflow_handlers.py
+    config:
+      payload:
+        query: "{{ input.query }}"
+        filters: "{{ input.filters }}"
+        vector_top_k: "{{ input.vector_top_k }}"
