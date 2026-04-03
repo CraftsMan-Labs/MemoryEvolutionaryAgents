@@ -1,0 +1,3 @@
+Incident: Qdrant timeout observed for 3 requests.
+Problem: Missing backoff policy for vector upsert retries.
+Solution: Added bounded exponential retry and better timeout defaults.
