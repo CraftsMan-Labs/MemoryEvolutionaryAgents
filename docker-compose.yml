@@ -1,0 +1,134 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-memory_agents}
+      POSTGRES_USER: ${POSTGRES_USER:-memory_agents}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memory_agents}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memory_agents} -d ${POSTGRES_DB:-memory_agents}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-memory_agents}:${POSTGRES_PASSWORD:-memory_agents}@postgres:5432/${POSTGRES_DB:-memory_agents}
+    volumes:
+      - ./migrations:/migrations:ro
+      - ./scripts/migrate.sh:/migrate.sh:ro
+    command: ["sh", "/migrate.sh"]
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      MEA_DB_PATH: ${MEA_DB_PATH:-/data/memory_agents.db}
+      MEA_DATABASE_URL: ${MEA_DATABASE_URL:-postgresql://memory_agents:memory_agents@postgres:5432/memory_agents}
+      MEA_SCAN_INTERVAL_SECONDS: ${MEA_SCAN_INTERVAL_SECONDS:-300}
+      MEA_SCAN_CYCLE_TIMEOUT_SECONDS: ${MEA_SCAN_CYCLE_TIMEOUT_SECONDS:-240}
+      MEA_MASTER_KEY: ${MEA_MASTER_KEY:-}
+      MEA_PHASE2_ENABLED: ${MEA_PHASE2_ENABLED:-true}
+      MEA_PHASE2_WORKFLOW_PATH: ${MEA_PHASE2_WORKFLOW_PATH:-/app/workflows/ingest_memory_v1.yaml}
+      MEA_PHASE3_ENABLED: ${MEA_PHASE3_ENABLED:-true}
+      MEA_PHASE3_WORKFLOW_PATH: ${MEA_PHASE3_WORKFLOW_PATH:-/app/workflows/ontology_evolution_v1.yaml}
+      MEA_PHASE3_MATCH_THRESHOLD: ${MEA_PHASE3_MATCH_THRESHOLD:-0.82}
+      MEA_PHASE4_ENABLED: ${MEA_PHASE4_ENABLED:-true}
+      MEA_WORKFLOW_PROVIDER: ${MEA_WORKFLOW_PROVIDER:-openai}
+      MEA_WORKFLOW_API_BASE: ${MEA_WORKFLOW_API_BASE:-https://api.openai.com/v1}
+      MEA_WORKFLOW_API_KEY: ${MEA_WORKFLOW_API_KEY:-}
+      MEA_WORKFLOW_MODEL: ${MEA_WORKFLOW_MODEL:-gpt-4o-mini}
+      MEA_QDRANT_URL: ${MEA_QDRANT_URL:-http://qdrant:6333}
+      MEA_QDRANT_API_KEY: ${MEA_QDRANT_API_KEY:-}
+      MEA_QDRANT_COLLECTION: ${MEA_QDRANT_COLLECTION:-memory_chunks}
+      MEA_OBSIDIAN_VAULT_PATH: ${MEA_OBSIDIAN_VAULT_PATH:-/data/obsidian-vault}
+    volumes:
+      - api_data:/data
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/status/health', timeout=5)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    environment:
+      MEA_DB_PATH: ${MEA_DB_PATH:-/data/memory_agents.db}
+      MEA_DATABASE_URL: ${MEA_DATABASE_URL:-postgresql://memory_agents:memory_agents@postgres:5432/memory_agents}
+      MEA_SCAN_INTERVAL_SECONDS: ${MEA_SCAN_INTERVAL_SECONDS:-300}
+      MEA_SCAN_CYCLE_TIMEOUT_SECONDS: ${MEA_SCAN_CYCLE_TIMEOUT_SECONDS:-240}
+      MEA_MASTER_KEY: ${MEA_MASTER_KEY:-}
+      MEA_PHASE2_ENABLED: ${MEA_PHASE2_ENABLED:-true}
+      MEA_PHASE2_WORKFLOW_PATH: ${MEA_PHASE2_WORKFLOW_PATH:-/app/workflows/ingest_memory_v1.yaml}
+      MEA_PHASE3_ENABLED: ${MEA_PHASE3_ENABLED:-true}
+      MEA_PHASE3_WORKFLOW_PATH: ${MEA_PHASE3_WORKFLOW_PATH:-/app/workflows/ontology_evolution_v1.yaml}
+      MEA_PHASE3_MATCH_THRESHOLD: ${MEA_PHASE3_MATCH_THRESHOLD:-0.82}
+      MEA_PHASE4_ENABLED: ${MEA_PHASE4_ENABLED:-true}
+      MEA_WORKFLOW_PROVIDER: ${MEA_WORKFLOW_PROVIDER:-openai}
+      MEA_WORKFLOW_API_BASE: ${MEA_WORKFLOW_API_BASE:-https://api.openai.com/v1}
+      MEA_WORKFLOW_API_KEY: ${MEA_WORKFLOW_API_KEY:-}
+      MEA_WORKFLOW_MODEL: ${MEA_WORKFLOW_MODEL:-gpt-4o-mini}
+      MEA_QDRANT_URL: ${MEA_QDRANT_URL:-http://qdrant:6333}
+      MEA_QDRANT_API_KEY: ${MEA_QDRANT_API_KEY:-}
+      MEA_QDRANT_COLLECTION: ${MEA_QDRANT_COLLECTION:-memory_chunks}
+      MEA_OBSIDIAN_VAULT_PATH: ${MEA_OBSIDIAN_VAULT_PATH:-/data/obsidian-vault}
+    volumes:
+      - api_data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from memory_evolutionary_agents.settings import load_settings; load_settings()\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+    ports:
+      - "${DASHBOARD_PORT:-5173}:5173"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5173 >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  api_data:
