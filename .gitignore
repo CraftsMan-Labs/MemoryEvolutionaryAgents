@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Node / dashboard artifacts
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+
+# Local runtime data
+memory_agents.db
+*.db-shm
+*.db-wal
