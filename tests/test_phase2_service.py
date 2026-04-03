@@ -18,7 +18,9 @@ from memory_evolutionary_agents.phase2.contracts import (
 from memory_evolutionary_agents.phase2.extraction_service import (
     WorkflowExtractionService,
 )
+from memory_evolutionary_agents.phase2.errors import WorkflowExecutionError
 from memory_evolutionary_agents.phase2.service import Phase2IngestionService
+from memory_evolutionary_agents.phase2.service import _is_retryable_failure
 
 
 class _FakeRunTracking:
@@ -115,6 +117,30 @@ class Phase2ServiceTestCase(unittest.TestCase):
             self.assertEqual(repository.persisted_memory_calls, 1)
             self.assertEqual(repository.stage_events[0][0], "workflow_started")
             self.assertEqual(repository.stage_events[-1][0], "workflow_completed")
+
+    def test_retryability_heuristic_marks_deterministic_errors_non_retryable(
+        self,
+    ) -> None:
+        self.assertFalse(_is_retryable_failure(ValueError("invalid output")))
+        self.assertFalse(
+            _is_retryable_failure(UnicodeDecodeError("utf-8", b"", 0, 1, "bad"))
+        )
+        self.assertFalse(
+            _is_retryable_failure(
+                WorkflowExecutionError(
+                    "workflow output missing terminal_output and nodes"
+                )
+            )
+        )
+
+    def test_retryability_heuristic_marks_transient_workflow_errors_retryable(
+        self,
+    ) -> None:
+        self.assertTrue(
+            _is_retryable_failure(
+                WorkflowExecutionError("workflow execution timed out after 90s")
+            )
+        )
 
 
 if __name__ == "__main__":

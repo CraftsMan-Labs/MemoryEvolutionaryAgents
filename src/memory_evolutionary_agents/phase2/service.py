@@ -241,11 +241,26 @@ class Phase2IngestionService:
                         occurred_at=failed_at,
                     )
                 )
-                self._phase6_progress.queue_retry(
-                    file_run_id=file_run.id,
-                    error_code="workflow_execution_failed",
-                    error_message=str(exc),
-                )
+                if _is_retryable_failure(exc):
+                    self._phase6_progress.queue_retry(
+                        file_run_id=file_run.id,
+                        error_code="workflow_execution_failed",
+                        error_message=str(exc),
+                    )
+                else:
+                    self._phase6_progress.transition(
+                        StageTransitionRequest(
+                            run_id=run_id,
+                            file_run_id=file_run.id,
+                            source_id=file_run.source_id,
+                            file_path=file_run.file_path,
+                            to_stage=FileStage.POISONED,
+                            status="failed",
+                            error_code="non_retryable_failure",
+                            error_message=str(exc),
+                            occurred_at=datetime.now(tz=timezone.utc),
+                        )
+                    )
 
     def _record_telemetry_event(
         self,
@@ -462,3 +477,23 @@ def _to_non_negative_int(value: object) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return 0
+
+
+def _is_retryable_failure(exc: Exception) -> bool:
+    if isinstance(exc, UnicodeDecodeError):
+        return False
+    if isinstance(exc, ValueError):
+        return False
+    if isinstance(exc, WorkflowExecutionError):
+        lowered = str(exc).lower()
+        retry_markers = (
+            "timed out",
+            "timeout",
+            "rate limit",
+            "tempor",
+            "connection",
+            "unavailable",
+            "overloaded",
+        )
+        return any(marker in lowered for marker in retry_markers)
+    return True
