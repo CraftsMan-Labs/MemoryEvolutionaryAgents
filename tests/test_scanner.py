@@ -43,6 +43,39 @@ class ScannerTestCase(unittest.TestCase):
             self.assertEqual(scanned_paths, {included.resolve()})
             self.assertEqual(result.errors, [])
 
+    def test_scan_source_ignores_generated_and_dependency_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            included = root / "src" / "project.md"
+            included.parent.mkdir(parents=True, exist_ok=True)
+            included.write_text("visible", encoding="utf-8")
+
+            generated = root / "memory-agent-summaries" / "project.md"
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("generated", encoding="utf-8")
+
+            dependency = root / "node_modules" / "pkg" / "index.js"
+            dependency.parent.mkdir(parents=True, exist_ok=True)
+            dependency.write_text("module", encoding="utf-8")
+
+            scanner = IncrementalScanner()
+            source = SourceRecord(
+                id=1,
+                path=str(root),
+                state=SourceState.ACTIVE,
+                created_at=datetime.now(tz=timezone.utc),
+                updated_at=datetime.now(tz=timezone.utc),
+                last_scan_at=None,
+                last_error=None,
+                last_scan_file_count=0,
+                last_scan_error_count=0,
+            )
+
+            result = scanner.scan_source(source)
+            scanned_paths = {Path(snapshot.file_path) for snapshot in result.snapshots}
+            self.assertEqual(scanned_paths, {included.resolve()})
+            self.assertEqual(result.errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

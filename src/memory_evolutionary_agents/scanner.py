@@ -7,6 +7,9 @@ from pathlib import Path
 from .contracts import FileSnapshot, SourceRecord
 
 
+_IGNORED_DIR_NAMES = {"memory-agent-summaries", "node_modules"}
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file_handle:
@@ -71,4 +74,9 @@ def _is_ignored_path(source_root: Path, file_path: Path) -> bool:
         relative = file_path.relative_to(source_root)
     except ValueError:
         return False
-    return any(part.startswith(".") for part in relative.parts)
+    for part in relative.parts:
+        if part.startswith("."):
+            return True
+        if part in _IGNORED_DIR_NAMES:
+            return True
+    return False

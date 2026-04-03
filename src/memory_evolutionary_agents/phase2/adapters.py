@@ -80,7 +80,11 @@ class FileSystemObsidianAdapter(ObsidianAdapter):
     def write_summary(self, request: ObsidianWriteRequest) -> ObsidianWriteResponse:
         summaries_root = self._vault_path / "memory-agent-summaries"
         summaries_root.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(request.file_path).name.replace(" ", "_")
+        file_name = Path(request.file_path).name.replace(" ", "_")
+        if file_name.lower().endswith(".md"):
+            safe_name = Path(file_name).stem
+        else:
+            safe_name = file_name
         summary_path = summaries_root / f"{safe_name}.md"
         content = f"# {request.title}\n\n{request.body}\n"
         summary_path.write_text(content, encoding="utf-8")
