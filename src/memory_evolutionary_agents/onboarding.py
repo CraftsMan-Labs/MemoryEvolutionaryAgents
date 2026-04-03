@@ -37,11 +37,9 @@ class VaultPathValidator:
 
 
 class QdrantLocalHealthValidator:
-    def validate(self) -> ValidationResult:
+    def validate(self, health_url: str) -> ValidationResult:
         try:
-            with urllib.request.urlopen(
-                "http://localhost:6333/healthz", timeout=3
-            ) as response:
+            with urllib.request.urlopen(health_url, timeout=3) as response:
                 status_code = getattr(response, "status", 0)
             if status_code == 200:
                 return ValidationResult(
@@ -85,12 +83,18 @@ class QdrantExternalValidator:
 
 
 class OnboardingService:
-    def __init__(self, database: Database, cipher: SecretCipher) -> None:
+    def __init__(
+        self,
+        database: Database,
+        cipher: SecretCipher,
+        local_qdrant_url: str,
+    ) -> None:
         self._repository = OnboardingRepository(database)
         self._cipher = cipher
         self._vault_validator = VaultPathValidator()
         self._local_qdrant_validator = QdrantLocalHealthValidator()
         self._external_qdrant_validator = QdrantExternalValidator()
+        self._local_qdrant_health_url = f"{local_qdrant_url.rstrip('/')}/healthz"
 
     def get_status(self) -> OnboardingStatusResponse:
         state = self._repository.get_state()
@@ -145,7 +149,9 @@ class OnboardingService:
     def test_connector(self, request: ConnectorTestRequest) -> ConnectorTestResponse:
         vault_result = self._vault_validator.validate(request.obsidian_vault_path)
         if request.qdrant_mode == QdrantMode.LOCAL_DOCKER:
-            qdrant_result = self._local_qdrant_validator.validate()
+            qdrant_result = self._local_qdrant_validator.validate(
+                self._local_qdrant_health_url
+            )
         else:
             qdrant_result = self._external_qdrant_validator.validate(
                 request.external_qdrant_url,

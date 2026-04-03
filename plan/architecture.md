@@ -14,6 +14,7 @@ flowchart TB
     end
 
     subgraph Portal[Vue Dashboard]
+        P0[Onboarding Wizard]
         P1[Chat]
         P2[Status]
         P3[File Progress]
@@ -23,6 +24,7 @@ flowchart TB
 
     subgraph API[FastAPI Service]
         A1[Auth]
+        A0[Onboarding and Connector Config API]
         A2[Source Registry API]
         A3[Chat Orchestrator API]
         A4[Metrics and Status API]
@@ -53,7 +55,8 @@ flowchart TB
 
     subgraph Data[State and Memory]
         D1[(Postgres)]
-        D2[(Qdrant)]
+        D2[(Qdrant Local Docker)]
+        D5[(Qdrant External)]
         D3[Obsidian Vault]
         D4[Langfuse]
     end
@@ -64,6 +67,8 @@ flowchart TB
     C4 --> W2
 
     Portal --> A2
+    Portal --> A0
+    A0 --> D1
     A2 --> SR
     SR --> W2
 
@@ -72,6 +77,7 @@ flowchart TB
     Y3 --> D1
     Y4 --> D1
     Y6 --> D2
+    Y6 --> D5
     Y7 --> D3
     W4 --> D1
     W5 --> D4
@@ -79,14 +85,47 @@ flowchart TB
     Portal --> API
     API --> D1
     API --> D2
+    API --> D5
     API --> D3
     API --> D4
 
     API --> Y8
     Y8 --> D2
+    Y8 --> D5
     Y8 --> D3
     Y8 --> Y9
     Y9 --> API
+```
+
+## Onboarding and Data Residency
+
+- First-run onboarding requires users to set the Obsidian vault folder path before ingestion starts.
+- Qdrant is chosen during onboarding:
+  - `local_docker`: platform-managed Qdrant container,
+  - `external`: user-provided Qdrant URL and API key.
+- Connector secrets (for external Qdrant) are encrypted in Postgres and never returned in raw form after save.
+- Worker and chat services resolve active Qdrant target from connector config so data goes to the selected residency target.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant P as Onboarding Wizard
+    participant A as FastAPI Onboarding API
+    participant PG as Postgres
+    participant Q as Qdrant Target
+
+    U->>P: Enter Obsidian vault path
+    P->>A: Submit vault path + qdrant mode
+    A->>A: Validate vault path
+    alt local_docker
+        A->>Q: Check local Qdrant health
+    else external
+        P->>A: Submit external URL + API key
+        A->>Q: Test external Qdrant auth/query
+    end
+    A->>PG: Save connector config (encrypted secrets)
+    A->>PG: Mark onboarding completed
+    A-->>P: Return success and enable app
 ```
 
 ## Runtime Flow (Ingestion)

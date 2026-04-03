@@ -46,7 +46,11 @@ def build_container() -> AppContainer:
     source_registry = SourceRegistryService(database)
     run_tracking = RunTrackingService(database)
     cipher = SecretCipher.from_env()
-    onboarding = OnboardingService(database, cipher)
+    onboarding = OnboardingService(
+        database=database,
+        cipher=cipher,
+        local_qdrant_url=settings.qdrant_url,
+    )
     scanner = IncrementalScanner()
     scheduler = CronIngestionScheduler(
         source_registry=source_registry,

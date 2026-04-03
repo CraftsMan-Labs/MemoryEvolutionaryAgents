@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 import re
+from typing import cast
+from uuid import uuid4
 
+import httpx
 from ..phase3.contracts import FilterAliasResolutionRequest
 from ..phase3.service import OntologyEvolutionService
+from ..phase5.contracts import TelemetryEventRequest
+from ..phase5.service import TelemetryService
 from .adapters import QdrantSearchAdapter
 from .contracts import (
     CanonicalMemoryRecord,
@@ -196,22 +203,61 @@ class ChatOrchestrationService:
         linkwalk_retrieval: LinkWalkRetrievalService,
         synthesis: ChatSynthesisService,
         ontology_service: OntologyEvolutionService | None,
+        telemetry_service: TelemetryService | None,
     ) -> None:
         self._validator = validator
         self._vector_retrieval = vector_retrieval
         self._linkwalk_retrieval = linkwalk_retrieval
         self._synthesis = synthesis
         self._ontology_service = ontology_service
+        self._telemetry_service = telemetry_service
 
     def query(self, request: ChatQueryRequest) -> ChatQueryResponse:
+        request_id = str(uuid4())
+        correlation_id = f"chat-{request_id}"
         validated = self._validator.validate(request)
         resolved_request, ontology_aliases, taxonomy_aliases = self._resolve_aliases(
             validated
         )
 
+        started_at = datetime.now(tz=timezone.utc)
         vector_results = self._vector_retrieval.retrieve(resolved_request)
+        self._record_telemetry(
+            request=TelemetryEventRequest(
+                event_type="chat_node",
+                run_id=None,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                stage="vector_retrieval",
+                status="success",
+                provider="local",
+                model_name="phase4-vector",
+                input_tokens=0,
+                output_tokens=0,
+                metadata={"kept": len(vector_results)},
+                recorded_at=started_at,
+            ),
+            span_name="chat.vector_retrieval",
+        )
         linkwalk_results = self._linkwalk_retrieval.retrieve(
             resolved_request, vector_results
+        )
+        self._record_telemetry(
+            request=TelemetryEventRequest(
+                event_type="chat_node",
+                run_id=None,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                stage="linkwalk_retrieval",
+                status="success",
+                provider="local",
+                model_name="phase4-linkwalk",
+                input_tokens=0,
+                output_tokens=0,
+                metadata={"kept": len(linkwalk_results)},
+                recorded_at=datetime.now(tz=timezone.utc),
+            ),
+            span_name="chat.linkwalk_retrieval",
         )
         answer, confidence, citations = self._synthesis.synthesize_answer(
             query=resolved_request.query,
@@ -219,7 +265,32 @@ class ChatOrchestrationService:
             linkwalk_results=linkwalk_results,
             top_k=resolved_request.top_k,
         )
+        token_usage = _estimate_chat_token_usage(
+            query=resolved_request.query,
+            answer=answer,
+        )
+        self._record_telemetry(
+            request=TelemetryEventRequest(
+                event_type="chat_request",
+                run_id=None,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                stage="synthesis",
+                status="success",
+                provider="local",
+                model_name="phase4-synthesis",
+                input_tokens=token_usage.input_tokens,
+                output_tokens=token_usage.output_tokens,
+                metadata={
+                    "vector_kept": len(vector_results),
+                    "linkwalk_kept": len(linkwalk_results),
+                },
+                recorded_at=datetime.now(tz=timezone.utc),
+            ),
+            span_name="chat.synthesis",
+        )
         return ChatQueryResponse(
+            request_id=request_id,
             answer=answer,
             confidence=confidence,
             citations=citations,
@@ -240,6 +311,20 @@ class ChatOrchestrationService:
                 resolved_ontology_aliases=ontology_aliases,
                 resolved_taxonomy_aliases=taxonomy_aliases,
             ),
+        )
+
+    def _record_telemetry(
+        self,
+        request: TelemetryEventRequest,
+        span_name: str,
+    ) -> None:
+        if self._telemetry_service is None:
+            return
+        self._telemetry_service.record_event(
+            request=request,
+            span_name=span_name,
+            span_kind="node",
+            allow_missing_pricing=True,
         )
 
     def _resolve_aliases(
@@ -268,6 +353,15 @@ class ChatOrchestrationService:
 
 
 def _embed_query(query: str, dimensions: int) -> list[float]:
+    provider = os.getenv("MEA_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    if provider == "openai":
+        embedded = _embed_query_with_openai_compatible(query)
+        if len(embedded) > 0:
+            return embedded
+    if provider == "ollama":
+        embedded = _embed_query_with_ollama(query)
+        if len(embedded) > 0:
+            return embedded
     if dimensions <= 0:
         return []
     encoded = query.encode("utf-8")
@@ -277,6 +371,76 @@ def _embed_query(query: str, dimensions: int) -> list[float]:
         data += hashlib.sha256(encoded + bytes([index])).digest()
         index += 1
     return [float(value) / 255.0 for value in data[:dimensions]]
+
+
+def _embed_query_with_ollama(query: str) -> list[float]:
+    api_base = os.getenv("MEA_EMBEDDING_API_BASE", "http://localhost:11434").strip()
+    model = os.getenv("MEA_EMBEDDING_MODEL", "nomic-embed-text-v2-moe:latest").strip()
+    if len(api_base) == 0 or len(model) == 0:
+        return []
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{api_base.rstrip('/')}/api/embed",
+                json={"model": model, "input": query},
+            )
+        if response.is_success is False:
+            return []
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+    raw_embeddings = payload.get("embeddings")
+    if isinstance(raw_embeddings, list) is False or len(raw_embeddings) == 0:
+        return []
+    first = raw_embeddings[0]
+    if isinstance(first, list) is False:
+        return []
+    vector: list[float] = []
+    for value in first:
+        if isinstance(value, (int, float)):
+            vector.append(float(value))
+    return vector
+
+
+def _embed_query_with_openai_compatible(query: str) -> list[float]:
+    api_base = os.getenv("MEA_EMBEDDING_API_BASE", "http://localhost:4000/v1").strip()
+    model = os.getenv("MEA_EMBEDDING_MODEL", "ollama-nomic-embed-text-v2-moe").strip()
+    api_key = os.getenv("MEA_EMBEDDING_API_KEY", "").strip()
+    if len(api_base) == 0 or len(model) == 0:
+        return []
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if len(api_key) > 0:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        with httpx.Client(timeout=45.0) as client:
+            response = client.post(
+                f"{api_base.rstrip('/')}/embeddings",
+                headers=headers,
+                json={
+                    "model": model,
+                    "input": query,
+                    "encoding_format": "float",
+                },
+            )
+        if response.is_success is False:
+            return []
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+    raw_data = payload.get("data")
+    if isinstance(raw_data, list) is False or len(raw_data) == 0:
+        return []
+    first = raw_data[0]
+    if isinstance(first, dict) is False:
+        return []
+    raw_embedding = first.get("embedding")
+    if isinstance(raw_embedding, list) is False:
+        return []
+    vector: list[float] = []
+    for value in raw_embedding:
+        if isinstance(value, (int, float)):
+            vector.append(float(value))
+    return vector
 
 
 def _extract_expected_dim(error_message: str) -> int | None:
@@ -365,7 +529,7 @@ def _list_from_payload(value: object) -> list[str]:
     if isinstance(value, list) is False:
         return []
     values: list[str] = []
-    for item in value:
+    for item in cast(list[object], value):
         if isinstance(item, str):
             values.append(item)
     return values
@@ -432,3 +596,15 @@ def _lexical_overlap_score(query: str, text: str) -> float:
     text_tokens = {token.lower() for token in text.split()}
     shared = query_tokens.intersection(text_tokens)
     return float(len(shared)) / float(len(query_tokens))
+
+
+class _TokenUsageEstimate:
+    def __init__(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+def _estimate_chat_token_usage(query: str, answer: str) -> _TokenUsageEstimate:
+    input_tokens = max(1, len(query.split()))
+    output_tokens = max(1, len(answer.split()))
+    return _TokenUsageEstimate(input_tokens=input_tokens, output_tokens=output_tokens)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..phase2.persistence import PostgresConnectionFactory
 from ..phase3.service import OntologyEvolutionService
+from ..phase5.service import TelemetryService
 from ..settings import AppSettings
 from .adapters import HttpQdrantSearchAdapter
 from .linkwalk import ObsidianLinkGraphReader
@@ -18,6 +19,7 @@ from .validation import ChatQueryValidationService
 def build_phase4_service(
     settings: AppSettings,
     ontology_service: OntologyEvolutionService | None,
+    telemetry_service: TelemetryService | None,
 ) -> ChatOrchestrationService | None:
     if settings.phase4_enabled is False:
         return None
@@ -47,4 +49,5 @@ def build_phase4_service(
         linkwalk_retrieval=linkwalk_retrieval,
         synthesis=synthesis,
         ontology_service=ontology_service,
+        telemetry_service=telemetry_service,
     )

@@ -31,7 +31,9 @@ class SimpleAgentsWorkflowRunner:
             raise Phase2ConfigurationError(
                 f"phase2 workflow file not found: {workflow_file}"
             )
-        if self._api_key is None or len(self._api_key.strip()) == 0:
+        if self._provider != "ollama" and (
+            self._api_key is None or len(self._api_key.strip()) == 0
+        ):
             raise Phase2ConfigurationError("MEA_WORKFLOW_API_KEY is required")
 
         try:

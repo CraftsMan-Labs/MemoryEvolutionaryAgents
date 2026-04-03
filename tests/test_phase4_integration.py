@@ -69,6 +69,7 @@ class Phase4IntegrationTestCase(unittest.TestCase):
                 linkwalk_retrieval=linkwalk,
                 synthesis=ChatSynthesisService(),
                 ontology_service=None,
+                telemetry_service=None,
             )
 
             response = service.query(

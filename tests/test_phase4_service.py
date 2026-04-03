@@ -136,6 +136,7 @@ class Phase4ServiceTestCase(unittest.TestCase):
             linkwalk_retrieval=linkwalk,
             synthesis=ChatSynthesisService(),
             ontology_service=_FakeOntologyService(),
+            telemetry_service=None,
         )
         response = service.query(
             ChatQueryRequest(

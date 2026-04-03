@@ -33,6 +33,7 @@ from .phase5.contracts import (
     ConnectorHealthResponse,
     FreshnessStatusResponse,
     JobHealthResponse,
+    PipelineMetricsResponse,
     UsageMetricsResponse,
 )
 from .phase5.errors import MissingPricingError
@@ -179,6 +180,19 @@ def create_app() -> FastAPI:
         if days < 1 or days > 90:
             raise HTTPException(status_code=400, detail="days must be between 1 and 90")
         return dep_container.phase5_status.usage_metrics(range_days=days)
+
+    @app.get("/metrics/pipeline", response_model=PipelineMetricsResponse)
+    def pipeline_metrics(
+        days: int = 7,
+        dep_container: AppContainer = Depends(get_container),
+    ) -> PipelineMetricsResponse:
+        if dep_container.phase5_status is None:
+            raise HTTPException(
+                status_code=404, detail="phase5 status service is disabled"
+            )
+        if days < 1 or days > 90:
+            raise HTTPException(status_code=400, detail="days must be between 1 and 90")
+        return dep_container.phase5_status.pipeline_metrics(range_days=days)
 
     @app.post("/jobs/scan")
     def trigger_scan(

@@ -10,13 +10,14 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.normalize
         file_path: "{{ input.file_path }}"
         file_content: "{{ input.file_content }}"
 
   - id: extract_structured_memory
     node_type:
       llm_call:
-        model: gpt-4o-mini
+        model: ollama-lfm2
         stream: false
         heal: true
         temperature: 0.0
@@ -53,7 +54,7 @@ nodes:
   - id: classify_memory
     node_type:
       llm_call:
-        model: gpt-4o-mini
+        model: ollama-lfm2
         stream: false
         heal: true
         temperature: 0.0
@@ -87,6 +88,7 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.chunk
         document_text: "{{ nodes.normalize_file.output.document_text }}"
 
   - id: embed_chunks
@@ -96,6 +98,7 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.embed
         chunks: "{{ nodes.chunk_document.output.chunks }}"
 
   - id: upsert_qdrant
@@ -105,6 +108,7 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.qdrant
         embeddings: "{{ nodes.embed_chunks.output.embeddings }}"
 
   - id: write_obsidian_summary
@@ -114,6 +118,7 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.obsidian
         project: "{{ nodes.extract_structured_memory.output.project }}"
         problem: "{{ nodes.extract_structured_memory.output.problem }}"
         solution: "{{ nodes.extract_structured_memory.output.solution }}"
@@ -126,6 +131,7 @@ nodes:
         handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
     config:
       payload:
+        topic: phase2.telemetry
         correlation_id: "{{ input.correlation_id }}"
         status: success
       set_globals:

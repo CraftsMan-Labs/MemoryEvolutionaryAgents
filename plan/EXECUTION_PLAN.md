@@ -3,9 +3,24 @@
 ## Goal
 Build an evolutionary memory system that ingests session data from local agent folders, extracts structured memory, synchronizes with Obsidian for human readability, indexes in Qdrant for semantic retrieval, and exposes a dashboard with chat, telemetry, and file-level progress.
 
+## Engineering Guardrails (Mandatory)
+- Object-oriented design with clear responsibilities per class/service.
+- Keep code KISS and DRY: small focused units, no duplicated logic, straightforward control flow.
+- Keep code concise and readable for humans; avoid clever abstractions and code smells.
+- Every function/method must have explicit input and explicit output contracts (typed request/response models, DTOs, or dataclasses).
+- Avoid ambiguous truthy/falsy checks for nullable typed fields; use explicit null/none checks.
+- Prefer reusable shared utilities over one-off helpers in feature modules.
+- Add tests for both success and failure paths for each new behavior.
+- Use `uv` for Python environment/dependency workflows and `bun` for Vue workflows.
+
 ## Scope (v1)
 - Sources: `~/.claude`, `~/.codex`, `~/.opencode`, plus user-added folder paths from the portal.
 - Local sources are dynamic: new folder paths can be added, paused, resumed, or removed at any time without redeploying services.
+- On first install, onboarding must ask for the local Obsidian vault path and persist it as a required connector setting.
+- Qdrant deployment is selectable during onboarding:
+  - default: managed local Qdrant container from our Docker Compose stack,
+  - optional: user-provided external Qdrant URL + API key.
+- Onboarding must ask where data should reside (local managed services vs external Qdrant) and configure connectors accordingly.
 - Ingestion mode: cron-based background job every 5-10 minutes.
 - Graph strategy: Obsidian remains source-of-truth for links; outbound links are mirrored into Qdrant metadata.
 - Storage: Qdrant + Postgres.
@@ -16,6 +31,8 @@ Build an evolutionary memory system that ingests session data from local agent f
 ## Success Criteria
 - New/updated files are discovered and processed reliably on each cron cycle.
 - Each file has trackable stage progress and error visibility.
+- First-run onboarding captures Obsidian vault path and validates it before enabling ingestion.
+- First-run onboarding supports both local Docker Qdrant and external Qdrant credentials.
 - Extracted memory includes: project, problem, solution, date.
 - Obsidian notes are auto-written with readable summaries and links.
 - Qdrant contains searchable chunks with rich metadata filters and Obsidian link fields.
@@ -32,15 +49,43 @@ Build an evolutionary memory system that ingests session data from local agent f
 
 ## Execution Phases
 
+Detailed TODO documents for each phase are tracked in:
+- `plan/PHASE_0_TODO.md`
+- `plan/PHASE_0_1_TODO.md`
+- `plan/PHASE_1_TODO.md`
+- `plan/PHASE_2_TODO.md`
+- `plan/PHASE_3_TODO.md`
+- `plan/PHASE_4_TODO.md`
+- `plan/PHASE_5_TODO.md`
+- `plan/PHASE_6_TODO.md`
+
 ### Phase 0 - Project Bootstrap
 - Create Docker Compose stack for API, worker, dashboard, Postgres, Qdrant.
 - Add environment templates and service health checks.
 - Add migration framework and baseline schema.
+- Implement onboarding flow for data residency and connector setup.
+- Add first-run validation for Obsidian vault path and Qdrant connection mode.
 
 Deliverables:
 - `docker-compose.yml`
 - `.env.example`
 - DB migration setup
+- Onboarding API + UI screens for:
+  - Obsidian vault path input/validation,
+  - Qdrant mode selection (`local_docker` or `external`),
+  - external Qdrant URL/API key capture and encryption.
+
+### Phase 0.1 - First-Run Onboarding Gate
+- Block ingestion and chat until onboarding is completed.
+- Validate Obsidian vault path exists and is readable from worker runtime.
+- If `local_docker` is selected, verify local Qdrant health check before completion.
+- If `external` is selected, validate URL reachability and API key auth via test query.
+- Persist connector config and onboarding completion timestamp in Postgres.
+
+Deliverables:
+- `onboarding_state` table and connector validation records
+- Onboarding completion gate in API middleware and dashboard route guard
+- Connector test endpoint used by onboarding UI
 
 ### Phase 1 - Ingestion Foundation
 - Implement source registry for default paths + user-added paths.
@@ -144,6 +189,8 @@ Deliverables:
 
 ## API Surface (v1)
 - `POST /auth/login`
+- `GET /onboarding/status`
+- `POST /onboarding/configure`
 - `GET /status/health`
 - `GET /status/connectors`
 - `GET /status/jobs`

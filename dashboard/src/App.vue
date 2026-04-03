@@ -94,6 +94,21 @@ type UsageMetrics = {
   trend: UsageTrendPoint[];
 };
 
+type PipelineTrendPoint = {
+  date: string;
+  chunks_created: number;
+  memories_created: number;
+};
+
+type PipelineMetrics = {
+  range_days: number;
+  total_runs: number;
+  total_memories: number;
+  total_chunks: number;
+  avg_chunks_per_memory: number;
+  trend: PipelineTrendPoint[];
+};
+
 type FileProgressRecord = {
   file_run_id: number;
   run_id: number;
@@ -139,6 +154,7 @@ const jobHealth = ref<JobHealth | null>(null);
 const connectorHealth = ref<ConnectorHealth | null>(null);
 const freshness = ref<FreshnessStatus | null>(null);
 const usageMetrics = ref<UsageMetrics | null>(null);
+const pipelineMetrics = ref<PipelineMetrics | null>(null);
 const runFilesState = ref<LoadState>("idle");
 const runFilesError = ref("");
 const runFiles = ref<FileProgressRecord[]>([]);
@@ -164,6 +180,43 @@ const form = reactive({
   external_qdrant_url: "",
   external_qdrant_api_key: "",
 });
+
+type OnboardingPayload = {
+  obsidian_vault_path: string;
+  qdrant_mode: QdrantMode;
+  external_qdrant_url: string | null;
+  external_qdrant_api_key: string | null;
+};
+
+function buildOnboardingPayload(): OnboardingPayload {
+  const vaultPath = form.obsidian_vault_path.trim();
+  if (form.qdrant_mode === "external") {
+    const externalUrl = form.external_qdrant_url.trim();
+    const externalApiKey = form.external_qdrant_api_key.trim();
+    return {
+      obsidian_vault_path: vaultPath,
+      qdrant_mode: form.qdrant_mode,
+      external_qdrant_url: externalUrl.length > 0 ? externalUrl : null,
+      external_qdrant_api_key: externalApiKey.length > 0 ? externalApiKey : null,
+    };
+  }
+  return {
+    obsidian_vault_path: vaultPath,
+    qdrant_mode: form.qdrant_mode,
+    external_qdrant_url: null,
+    external_qdrant_api_key: null,
+  };
+}
+
+function formatApiError(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.length > 0) {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    return JSON.stringify(detail);
+  }
+  return fallback;
+}
 
 async function loadStatus(): Promise<void> {
   loading.value = true;
@@ -191,14 +244,15 @@ async function loadStatus(): Promise<void> {
 async function testConnectors(): Promise<void> {
   errorMessage.value = "";
   testMessage.value = "";
+  const requestPayload = buildOnboardingPayload();
   const response = await fetch("/onboarding/test-connector", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(form),
+    body: JSON.stringify(requestPayload),
   });
   const payload = await response.json();
   if (!response.ok) {
-    errorMessage.value = payload.detail ?? "connector test failed";
+    errorMessage.value = formatApiError(payload.detail, "connector test failed");
     return;
   }
   testMessage.value = payload.message;
@@ -206,14 +260,15 @@ async function testConnectors(): Promise<void> {
 
 async function completeOnboarding(): Promise<void> {
   errorMessage.value = "";
+  const requestPayload = buildOnboardingPayload();
   const response = await fetch("/onboarding/configure", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(form),
+    body: JSON.stringify(requestPayload),
   });
   const payload = await response.json();
   if (!response.ok) {
-    errorMessage.value = payload.detail ?? "failed to complete onboarding";
+    errorMessage.value = formatApiError(payload.detail, "failed to complete onboarding");
     return;
   }
   await loadStatus();
@@ -241,19 +296,27 @@ async function loadPhase5Widgets(): Promise<void> {
   phase5State.value = "loading";
   phase5Error.value = "";
   try {
-    const [jobsResponse, connectorsResponse, freshnessResponse, usageResponse] = await Promise.all([
+    const [jobsResponse, connectorsResponse, freshnessResponse, usageResponse, pipelineResponse] = await Promise.all([
       fetch("/status/jobs"),
       fetch("/status/connectors"),
       fetch("/status/freshness"),
       fetch("/metrics/usage?days=7"),
+      fetch("/metrics/pipeline?days=7"),
     ]);
-    if (!jobsResponse.ok || !connectorsResponse.ok || !freshnessResponse.ok || !usageResponse.ok) {
+    if (
+      !jobsResponse.ok ||
+      !connectorsResponse.ok ||
+      !freshnessResponse.ok ||
+      !usageResponse.ok ||
+      !pipelineResponse.ok
+    ) {
       throw new Error("failed to load phase 5 status widgets");
     }
     jobHealth.value = (await jobsResponse.json()) as JobHealth;
     connectorHealth.value = (await connectorsResponse.json()) as ConnectorHealth;
     freshness.value = (await freshnessResponse.json()) as FreshnessStatus;
     usageMetrics.value = (await usageResponse.json()) as UsageMetrics;
+    pipelineMetrics.value = (await pipelineResponse.json()) as PipelineMetrics;
     phase5State.value = "success";
   } catch (error) {
     phase5State.value = "error";
@@ -367,6 +430,55 @@ async function retryFile(fileRow: FileProgressRecord): Promise<void> {
 const usageCurrency = computed(() => usageMetrics.value?.currency ?? "USD");
 const usageCost = computed(() => usageMetrics.value?.total_cost_amount ?? "0");
 
+const processSegments = computed(() => {
+  const runs = jobHealth.value?.total_runs ?? 0;
+  const failed = jobHealth.value?.failed_runs ?? 0;
+  const running = jobHealth.value?.running_runs ?? 0;
+  const completed = Math.max(0, runs - failed - running);
+  const denominator = Math.max(1, runs);
+  return [
+    {
+      label: "completed",
+      value: completed,
+      width: Math.max(15, Math.round((completed / denominator) * 100)),
+      tone: "tone-ok",
+    },
+    {
+      label: "running",
+      value: running,
+      width: Math.max(15, Math.round((running / denominator) * 100)),
+      tone: "tone-warn",
+    },
+    {
+      label: "failed",
+      value: failed,
+      width: Math.max(15, Math.round((failed / denominator) * 100)),
+      tone: "tone-error",
+    },
+  ];
+});
+
+const tokenBars = computed(() => {
+  const trend = usageMetrics.value?.trend ?? [];
+  const maxTokens = Math.max(1, ...trend.map((item) => item.total_tokens));
+  return trend.map((item) => ({
+    label: item.date.slice(5),
+    value: item.total_tokens,
+    height: Math.max(6, Math.round((item.total_tokens / maxTokens) * 120)),
+  }));
+});
+
+const chunkBars = computed(() => {
+  const trend = pipelineMetrics.value?.trend ?? [];
+  const maxChunks = Math.max(1, ...trend.map((item) => item.chunks_created));
+  return trend.map((item) => ({
+    label: item.date.slice(5),
+    chunks: item.chunks_created,
+    memories: item.memories_created,
+    height: Math.max(6, Math.round((item.chunks_created / maxChunks) * 120)),
+  }));
+});
+
 function parseList(raw: string): string[] {
   return raw
     .split(",")
@@ -462,6 +574,72 @@ async function runChatQuery(): Promise<void> {
             <span class="kpi-label">cost (7d)</span>
             <strong class="kpi-value">{{ usageCurrency }} {{ usageCost }}</strong>
           </div>
+        </div>
+      </article>
+
+      <article class="panel full-span">
+        <h2>Analytics Dashboard</h2>
+        <p class="muted">Token consumption, process outcomes, and chunk generation trends.</p>
+        <div class="kpi-grid analytics-kpis">
+          <div class="kpi-card">
+            <span class="kpi-label">total tokens (7d)</span>
+            <strong class="kpi-value">{{ usageMetrics?.total_tokens ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">total processes</span>
+            <strong class="kpi-value">{{ pipelineMetrics?.total_runs ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">chunks created</span>
+            <strong class="kpi-value">{{ pipelineMetrics?.total_chunks ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">avg chunks/memory</span>
+            <strong class="kpi-value">{{ (pipelineMetrics?.avg_chunks_per_memory ?? 0).toFixed(2) }}</strong>
+          </div>
+        </div>
+
+        <div class="chart-grid">
+          <section class="chart-panel">
+            <h3>Process Outcomes</h3>
+            <div class="stacked-row">
+              <div
+                v-for="segment in processSegments"
+                :key="segment.label"
+                class="segment"
+                :class="segment.tone"
+                :style="{ width: `${segment.width}%` }"
+              >
+                {{ segment.label }}: {{ segment.value }}
+              </div>
+            </div>
+          </section>
+
+          <section class="chart-panel">
+            <h3>Tokens by Day</h3>
+            <div class="bar-chart" v-if="tokenBars.length > 0">
+              <div v-for="bar in tokenBars" :key="bar.label" class="bar-wrap">
+                <div class="bar token-bar" :style="{ height: `${bar.height}px` }" :title="`${bar.value} tokens`" />
+                <span class="bar-label">{{ bar.label }}</span>
+              </div>
+            </div>
+            <p v-else class="muted">No token events yet.</p>
+          </section>
+
+          <section class="chart-panel">
+            <h3>Chunks by Day</h3>
+            <div class="bar-chart" v-if="chunkBars.length > 0">
+              <div v-for="bar in chunkBars" :key="bar.label" class="bar-wrap">
+                <div
+                  class="bar chunk-bar"
+                  :style="{ height: `${bar.height}px` }"
+                  :title="`${bar.chunks} chunks, ${bar.memories} memories`"
+                />
+                <span class="bar-label">{{ bar.label }}</span>
+              </div>
+            </div>
+            <p v-else class="muted">No chunk activity yet.</p>
+          </section>
         </div>
       </article>
 
@@ -743,6 +921,82 @@ async function runChatQuery(): Promise<void> {
   border-color: var(--accent-hover);
 }
 
+.analytics-kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.chart-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.chart-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--raised);
+  padding: 12px;
+}
+
+.stacked-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.segment {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+.tone-ok {
+  background: color-mix(in srgb, #5cd0a5 20%, transparent);
+}
+
+.tone-warn {
+  background: color-mix(in srgb, #e0b460 20%, transparent);
+}
+
+.tone-error {
+  background: color-mix(in srgb, #e78468 20%, transparent);
+}
+
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-height: 150px;
+}
+
+.bar-wrap {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.bar {
+  width: 16px;
+  border-radius: 8px 8px 4px 4px;
+  border: 1px solid var(--border);
+}
+
+.token-bar {
+  background: color-mix(in srgb, var(--accent) 70%, #f4cbb9);
+}
+
+.chunk-bar {
+  background: color-mix(in srgb, #5cd0a5 70%, #b8f0da);
+}
+
+.bar-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -834,7 +1088,9 @@ button:disabled {
 
 @media (max-width: 920px) {
   .grid-two,
-  .field-row {
+  .field-row,
+  .chart-grid,
+  .analytics-kpis {
     grid-template-columns: 1fr;
   }
  }

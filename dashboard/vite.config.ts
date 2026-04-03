@@ -21,6 +21,14 @@ export default defineConfig({
         target: "http://api:8000",
         changeOrigin: true,
       },
+      "/files": {
+        target: "http://api:8000",
+        changeOrigin: true,
+      },
+      "/metrics": {
+        target: "http://api:8000",
+        changeOrigin: true,
+      },
       "/jobs": {
         target: "http://api:8000",
         changeOrigin: true,
