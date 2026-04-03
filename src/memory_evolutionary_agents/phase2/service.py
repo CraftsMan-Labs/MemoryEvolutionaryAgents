@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from typing import Any
 
 from ..contracts import FileRunRecord
 from ..run_tracking import RunTrackingService
 from .adapters import ObsidianAdapter, QdrantAdapter
 from ..phase3.contracts import OntologyEvolutionRequest, OntologyEvolutionResult
 from ..phase3.service import OntologyEvolutionService
+from ..phase5.contracts import TelemetryEventRequest
+from ..phase5.service import TelemetryService
+from ..phase6.contracts import FileStage, StageTransitionRequest
+from ..phase6.service import FileProgressService
 from .contracts import (
     CanonicalMemoryPersistRequest,
     IngestWorkflowInput,
@@ -36,6 +41,8 @@ class Phase2IngestionService:
         qdrant_adapter: QdrantAdapter,
         obsidian_adapter: ObsidianAdapter,
         ontology_service: OntologyEvolutionService | None = None,
+        phase6_progress: FileProgressService | None = None,
+        telemetry_service: TelemetryService | None = None,
     ) -> None:
         self._run_tracking = run_tracking
         self._repository = repository
@@ -44,6 +51,8 @@ class Phase2IngestionService:
         self._qdrant_adapter = qdrant_adapter
         self._obsidian_adapter = obsidian_adapter
         self._ontology_service = ontology_service
+        self._phase6_progress = phase6_progress
+        self._telemetry_service = telemetry_service
 
     def execute_for_run(self, run_id: int) -> None:
         file_runs = self._run_tracking.list_file_runs_for_run(run_id)
@@ -52,9 +61,33 @@ class Phase2IngestionService:
                 continue
             self._execute_single_file(run_id, file_run)
 
+    def execute_file_run(self, file_run_id: int) -> None:
+        file_run = self._run_tracking.get_file_run(file_run_id)
+        if file_run.status not in {"queued", "running", "failed"}:
+            return
+        self._execute_single_file(file_run.run_id, file_run)
+
     def _execute_single_file(self, run_id: int, file_run: FileRunRecord) -> None:
         correlation_id = f"run-{run_id}-file-{file_run.id}"
         started_at = datetime.now(tz=timezone.utc)
+        self._record_telemetry_event(
+            TelemetryEventRequest(
+                event_type="ingest_run",
+                run_id=run_id,
+                request_id=None,
+                correlation_id=correlation_id,
+                stage="workflow_started",
+                status="success",
+                provider=self._workflow_provider(),
+                model_name=self._workflow_model(),
+                input_tokens=0,
+                output_tokens=0,
+                error_classification=None,
+                metadata={"file_path": file_run.file_path},
+                recorded_at=started_at,
+            ),
+            span_name="ingest.workflow_started",
+        )
         self._repository.record_stage_event(
             WorkflowStageEventRequest(
                 run_id=run_id,
@@ -68,6 +101,20 @@ class Phase2IngestionService:
                 recorded_at=started_at,
             )
         )
+        if self._phase6_progress is not None:
+            self._phase6_progress.transition(
+                StageTransitionRequest(
+                    run_id=run_id,
+                    file_run_id=file_run.id,
+                    source_id=file_run.source_id,
+                    file_path=file_run.file_path,
+                    to_stage=FileStage.WORKFLOW_STARTED,
+                    status="running",
+                    error_code=None,
+                    error_message=None,
+                    occurred_at=started_at,
+                )
+            )
 
         try:
             file_content = self._read_file(file_run.file_path)
@@ -81,8 +128,27 @@ class Phase2IngestionService:
                 correlation_id=correlation_id,
             )
             result = self._workflow_runner.run_workflow(workflow_input)
+            usage = _extract_usage(raw_output=result.raw_output)
             extraction = self._extraction_service.extract(result)
             self._persist_memory_record(workflow_input, extraction)
+            self._record_telemetry_event(
+                TelemetryEventRequest(
+                    event_type="ingest_node",
+                    run_id=run_id,
+                    request_id=None,
+                    correlation_id=correlation_id,
+                    stage="workflow_completed",
+                    status="success",
+                    provider=self._workflow_provider(),
+                    model_name=self._workflow_model(),
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    error_classification=None,
+                    metadata={"file_path": file_run.file_path},
+                    recorded_at=datetime.now(tz=timezone.utc),
+                ),
+                span_name="ingest.workflow_completed",
+            )
             self._repository.record_stage_event(
                 WorkflowStageEventRequest(
                     run_id=run_id,
@@ -96,7 +162,57 @@ class Phase2IngestionService:
                     recorded_at=datetime.now(tz=timezone.utc),
                 )
             )
+            completed_at = datetime.now(tz=timezone.utc)
+            if self._phase6_progress is not None:
+                self._phase6_progress.transition(
+                    StageTransitionRequest(
+                        run_id=run_id,
+                        file_run_id=file_run.id,
+                        source_id=file_run.source_id,
+                        file_path=file_run.file_path,
+                        to_stage=FileStage.WORKFLOW_COMPLETED,
+                        status="success",
+                        error_code=None,
+                        error_message=None,
+                        occurred_at=completed_at,
+                    )
+                )
+                self._phase6_progress.transition(
+                    StageTransitionRequest(
+                        run_id=run_id,
+                        file_run_id=file_run.id,
+                        source_id=file_run.source_id,
+                        file_path=file_run.file_path,
+                        to_stage=FileStage.COMPLETED,
+                        status="success",
+                        error_code=None,
+                        error_message=None,
+                        occurred_at=completed_at,
+                    )
+                )
         except (OSError, WorkflowExecutionError, RuntimeError, ValueError) as exc:
+            self._record_telemetry_event(
+                TelemetryEventRequest(
+                    event_type="ingest_node",
+                    run_id=run_id,
+                    request_id=None,
+                    correlation_id=correlation_id,
+                    stage="workflow_failed",
+                    status="failed",
+                    provider=self._workflow_provider(),
+                    model_name=self._workflow_model(),
+                    input_tokens=0,
+                    output_tokens=0,
+                    error_classification=(
+                        self._telemetry_service.classify_failure(exc)
+                        if self._telemetry_service is not None
+                        else "runtime"
+                    ),
+                    metadata={"file_path": file_run.file_path, "error": str(exc)},
+                    recorded_at=datetime.now(tz=timezone.utc),
+                ),
+                span_name="ingest.workflow_failed",
+            )
             self._repository.record_stage_event(
                 WorkflowStageEventRequest(
                     run_id=run_id,
@@ -110,6 +226,52 @@ class Phase2IngestionService:
                     recorded_at=datetime.now(tz=timezone.utc),
                 )
             )
+            if self._phase6_progress is not None:
+                failed_at = datetime.now(tz=timezone.utc)
+                self._phase6_progress.transition(
+                    StageTransitionRequest(
+                        run_id=run_id,
+                        file_run_id=file_run.id,
+                        source_id=file_run.source_id,
+                        file_path=file_run.file_path,
+                        to_stage=FileStage.FAILED,
+                        status="failed",
+                        error_code="workflow_execution_failed",
+                        error_message=str(exc),
+                        occurred_at=failed_at,
+                    )
+                )
+                self._phase6_progress.queue_retry(
+                    file_run_id=file_run.id,
+                    error_code="workflow_execution_failed",
+                    error_message=str(exc),
+                )
+
+    def _record_telemetry_event(
+        self,
+        event: TelemetryEventRequest,
+        span_name: str,
+    ) -> None:
+        if self._telemetry_service is None:
+            return
+        self._telemetry_service.record_event(
+            request=event,
+            span_name=span_name,
+            span_kind="node",
+            allow_missing_pricing=True,
+        )
+
+    def _workflow_provider(self) -> str:
+        provider = getattr(self._workflow_runner, "provider", "workflow")
+        if isinstance(provider, str) and len(provider.strip()) > 0:
+            return provider
+        return "workflow"
+
+    def _workflow_model(self) -> str:
+        model = getattr(self._workflow_runner, "model", "default")
+        if isinstance(model, str) and len(model.strip()) > 0:
+            return model
+        return "default"
 
     def _read_file(self, file_path: str) -> str:
         with open(file_path, "r", encoding="utf-8") as file_handle:
@@ -260,3 +422,43 @@ class Phase2IngestionService:
                 actor="worker",
             )
         )
+
+
+class _UsageSummary:
+    def __init__(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+def _extract_usage(raw_output: dict[str, object]) -> _UsageSummary:
+    usage = raw_output.get("usage")
+    if isinstance(usage, dict):
+        return _extract_usage_from_dict(usage)
+    for value in raw_output.values():
+        if isinstance(value, dict) and "usage" in value:
+            nested_usage = value.get("usage")
+            if isinstance(nested_usage, dict):
+                return _extract_usage_from_dict(nested_usage)
+    return _UsageSummary(input_tokens=0, output_tokens=0)
+
+
+def _extract_usage_from_dict(usage: dict[str, Any]) -> _UsageSummary:
+    input_tokens = _to_non_negative_int(
+        usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    )
+    output_tokens = _to_non_negative_int(
+        usage.get("output_tokens", usage.get("completion_tokens", 0))
+    )
+    return _UsageSummary(input_tokens=input_tokens, output_tokens=output_tokens)
+
+
+def _to_non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0

@@ -49,3 +49,6 @@ class RunTrackingService:
 
     def list_file_runs_for_run(self, run_id: int) -> list[FileRunRecord]:
         return self._repository.list_file_runs_for_run(run_id)
+
+    def get_file_run(self, file_run_id: int) -> FileRunRecord:
+        return self._repository.get_file_run(file_run_id)

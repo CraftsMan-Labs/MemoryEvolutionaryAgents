@@ -113,6 +113,11 @@ class RunRepository:
     def start_run(self) -> IngestionRunRecord:
         now = _utc_now()
         with self._database.connection() as conn:
+            running = conn.execute(
+                "SELECT id FROM ingestion_runs WHERE status = 'running' LIMIT 1"
+            ).fetchone()
+            if running is not None:
+                raise RuntimeError("ingestion cycle already running")
             cursor = conn.execute(
                 "INSERT INTO ingestion_runs(started_at, status) VALUES(?, ?)",
                 (now, "running"),
@@ -208,8 +213,8 @@ class RunRepository:
 
             conn.execute(
                 """
-                INSERT INTO file_processing_runs(run_id, source_id, source_path, file_path, stage, status, created_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO file_processing_runs(run_id, source_id, source_path, file_path, stage, status, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -218,6 +223,40 @@ class RunRepository:
                     snapshot.file_path,
                     "discovered",
                     status,
+                    _utc_now(),
+                    _utc_now(),
+                ),
+            )
+            file_run_id = _row_id(
+                conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            )
+            conn.execute(
+                """
+                INSERT INTO file_stage_events(
+                  run_id,
+                  file_run_id,
+                  source_id,
+                  file_path,
+                  from_stage,
+                  to_stage,
+                  status,
+                  duration_ms,
+                  error_code,
+                  error_message,
+                  recorded_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    file_run_id,
+                    snapshot.source_id,
+                    snapshot.file_path,
+                    None,
+                    "discovered",
+                    status,
+                    None,
+                    None,
+                    None,
                     _utc_now(),
                 ),
             )
@@ -233,8 +272,8 @@ class RunRepository:
         with self._database.connection() as conn:
             conn.execute(
                 """
-                INSERT INTO file_processing_runs(run_id, source_id, source_path, file_path, stage, status, error_code, error_message, created_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO file_processing_runs(run_id, source_id, source_path, file_path, stage, status, error_code, error_message, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -243,6 +282,40 @@ class RunRepository:
                     source_path,
                     "discovered",
                     "failed",
+                    error_code,
+                    error_message,
+                    _utc_now(),
+                    _utc_now(),
+                ),
+            )
+            file_run_id = _row_id(
+                conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            )
+            conn.execute(
+                """
+                INSERT INTO file_stage_events(
+                  run_id,
+                  file_run_id,
+                  source_id,
+                  file_path,
+                  from_stage,
+                  to_stage,
+                  status,
+                  duration_ms,
+                  error_code,
+                  error_message,
+                  recorded_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    file_run_id,
+                    source_id,
+                    source_path,
+                    None,
+                    "failed",
+                    "failed",
+                    None,
                     error_code,
                     error_message,
                     _utc_now(),
@@ -256,6 +329,16 @@ class RunRepository:
                 (run_id,),
             ).fetchall()
         return [FileRunRecord.model_validate(dict(row)) for row in rows]
+
+    def get_file_run(self, file_run_id: int) -> FileRunRecord:
+        with self._database.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM file_processing_runs WHERE id = ?",
+                (file_run_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("file run not found")
+        return FileRunRecord.model_validate(dict(row))
 
 
 class OnboardingRepository:

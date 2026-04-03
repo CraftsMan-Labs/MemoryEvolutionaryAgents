@@ -61,10 +61,54 @@ class Database:
                   error_code TEXT,
                   error_message TEXT,
                   created_at TEXT NOT NULL,
+                  updated_at TEXT,
                   FOREIGN KEY(run_id) REFERENCES ingestion_runs(id),
                   FOREIGN KEY(source_id) REFERENCES sources(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS file_stage_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  run_id INTEGER NOT NULL,
+                  file_run_id INTEGER NOT NULL,
+                  source_id INTEGER NOT NULL,
+                  file_path TEXT NOT NULL,
+                  from_stage TEXT,
+                  to_stage TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  duration_ms INTEGER,
+                  error_code TEXT,
+                  error_message TEXT,
+                  recorded_at TEXT NOT NULL,
+                  FOREIGN KEY(run_id) REFERENCES ingestion_runs(id),
+                  FOREIGN KEY(file_run_id) REFERENCES file_processing_runs(id),
+                  FOREIGN KEY(source_id) REFERENCES sources(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS file_retry_queue (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  file_run_id INTEGER NOT NULL UNIQUE,
+                  run_id INTEGER NOT NULL,
+                  source_id INTEGER NOT NULL,
+                  file_path TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  attempt_count INTEGER NOT NULL,
+                  max_attempts INTEGER NOT NULL,
+                  next_attempt_at TEXT NOT NULL,
+                  last_error_code TEXT,
+                  last_error_message TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  FOREIGN KEY(file_run_id) REFERENCES file_processing_runs(id),
+                  FOREIGN KEY(run_id) REFERENCES ingestion_runs(id),
+                  FOREIGN KEY(source_id) REFERENCES sources(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_file_stage_events_file_run_id
+                ON file_stage_events(file_run_id);
+
+                CREATE INDEX IF NOT EXISTS idx_file_retry_queue_next_attempt
+                ON file_retry_queue(status, next_attempt_at);
+                
                 CREATE TABLE IF NOT EXISTS onboarding_state (
                   id INTEGER PRIMARY KEY,
                   is_completed INTEGER NOT NULL,
@@ -100,6 +144,12 @@ class Database:
                 conn,
                 table_name="file_processing_runs",
                 column_name="error_code",
+                column_spec="TEXT",
+            )
+            self._ensure_column(
+                conn,
+                table_name="file_processing_runs",
+                column_name="updated_at",
                 column_spec="TEXT",
             )
 
