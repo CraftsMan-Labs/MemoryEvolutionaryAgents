@@ -100,8 +100,7 @@ def _process_due_retries(container: AppContainer) -> None:
             container.phase6_progress.begin_retry(item)
             container.phase2_ingestion.execute_file_run(item.file_run_id)
             latest = container.run_tracking.get_file_run(item.file_run_id)
-            if latest.stage == "completed":
-                container.phase6_progress.complete_retry(item)
+            container.phase6_progress.settle_retry(item.file_run_id, latest.stage)
         except (RuntimeError, ValueError, OSError, WorkflowExecutionError) as exc:
             container.phase6_progress.fail_retry(item, exc)
 

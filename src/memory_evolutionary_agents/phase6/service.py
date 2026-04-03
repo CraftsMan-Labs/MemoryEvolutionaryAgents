@@ -246,6 +246,22 @@ class FileProgressService:
     def complete_retry(self, item: RetryQueueRecord) -> None:
         self._repository.mark_retry_done(item.file_run_id, "done")
 
+    def settle_retry(self, file_run_id: int, stage: str) -> None:
+        retry_item = self._repository.get_retry_item(file_run_id)
+        if retry_item is None:
+            return
+        if retry_item.status == "queued":
+            return
+        if stage == FileStage.COMPLETED.value:
+            self._repository.mark_retry_done(file_run_id, "done")
+            return
+        if stage == FileStage.POISONED.value:
+            self._repository.mark_retry_done(file_run_id, "poisoned")
+            return
+        if stage == FileStage.RETRY_QUEUED.value:
+            return
+        self._repository.mark_retry_done(file_run_id, "failed")
+
     def fail_retry(self, item: RetryQueueRecord, exc: Exception) -> None:
         self._repository.mark_retry_done(item.file_run_id, "failed")
         self.queue_retry(
