@@ -5,6 +5,7 @@ Build an evolutionary memory system that ingests session data from local agent f
 
 ## Scope (v1)
 - Sources: `~/.claude`, `~/.codex`, `~/.opencode`, plus user-added folder paths from the portal.
+- Local sources are dynamic: new folder paths can be added, paused, resumed, or removed at any time without redeploying services.
 - Ingestion mode: cron-based background job every 5-10 minutes.
 - Graph strategy: Obsidian remains source-of-truth for links; outbound links are mirrored into Qdrant metadata.
 - Storage: Qdrant + Postgres.
@@ -43,12 +44,14 @@ Deliverables:
 
 ### Phase 1 - Ingestion Foundation
 - Implement source registry for default paths + user-added paths.
+- Support hot updates to source registry from the portal so cron picks up newly added local sources on the next run.
 - Build incremental scanner with stable file fingerprint (`path + mtime + hash`).
 - Implement cron scheduler (5-10 minute cadence).
 - Record ingestion run metrics and per-file run records.
 
 Deliverables:
 - Source management APIs
+- Source lifecycle controls (`active`, `paused`, `deleted`) with per-source health and last-scan timestamps
 - Worker cron runner
 - `ingestion_runs`, `ingested_files`, `file_processing_runs` tables
 

@@ -29,6 +29,8 @@ flowchart TB
         A5[File Progress API]
     end
 
+    SR[(Postgres Source Registry)]
+
     subgraph Worker[Background Worker]
         W1[Cron Scheduler 5-10 min]
         W2[Incremental Scanner]
@@ -60,6 +62,10 @@ flowchart TB
     C2 --> W2
     C3 --> W2
     C4 --> W2
+
+    Portal --> A2
+    A2 --> SR
+    SR --> W2
 
     W1 --> W2 --> W3
     W3 --> Y1 --> Y2 --> Y3 --> Y4 --> Y5 --> Y6
@@ -160,3 +166,10 @@ flowchart LR
 - `Qdrant`: vector search and metadata filtering with mirrored Obsidian link fields.
 - `Obsidian Vault`: human-readable memory notes and wikilink graph.
 - `Langfuse`: trace-level observability and token-cost telemetry correlation.
+
+## Dynamic Local Sources
+
+- The source registry is runtime-configurable from the portal.
+- Users can add any local folder path as a source without restarting containers.
+- Source state supports `active`, `paused`, and `deleted` to control cron ingestion behavior.
+- New sources are discovered by the worker on the next cron cycle and included in incremental scans.
