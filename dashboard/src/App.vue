@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 type QdrantMode = "local_docker" | "external";
 
@@ -12,6 +12,8 @@ type OnboardingStatus = {
   has_external_qdrant_api_key: boolean;
   block_reason: string | null;
 };
+
+type LoadState = "idle" | "loading" | "success" | "error";
 
 const status = ref<OnboardingStatus | null>(null);
 const loading = ref(true);
@@ -27,6 +29,7 @@ type CitationRecord = {
 };
 
 type ChatResponse = {
+  request_id: string | null;
   answer: string;
   confidence: number;
   citations: CitationRecord[];
@@ -51,6 +54,107 @@ const chatForm = reactive({
 });
 
 const chatResponse = ref<ChatResponse | null>(null);
+
+type JobHealth = {
+  total_runs: number;
+  running_runs: number;
+  failed_runs: number;
+  latest_run_id: number | null;
+  latest_run_status: string | null;
+};
+
+type ConnectorHealth = {
+  total_sources: number;
+  healthy_sources: number;
+  unhealthy_sources: number;
+};
+
+type FreshnessStatus = {
+  latest_run_at: string | null;
+  minutes_since_last_run: number | null;
+  stale_threshold_minutes: number;
+  is_stale: boolean;
+};
+
+type UsageTrendPoint = {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_amount: string;
+};
+
+type UsageMetrics = {
+  range_days: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  total_cost_amount: string;
+  currency: string;
+  trend: UsageTrendPoint[];
+};
+
+type FileProgressRecord = {
+  file_run_id: number;
+  run_id: number;
+  source_id: number;
+  source_path: string;
+  file_path: string;
+  stage: string;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+type RunFilesResponse = {
+  run_id: number;
+  files: FileProgressRecord[];
+  stage_summary: { stage: string; total: number }[];
+  status_summary: { status: string; total: number }[];
+};
+
+type FileTimelineResponse = {
+  file_run_id: number;
+  events: {
+    id: number;
+    run_id: number;
+    file_run_id: number;
+    source_id: number;
+    file_path: string;
+    from_stage: string | null;
+    to_stage: string;
+    status: string;
+    duration_ms: number | null;
+    error_code: string | null;
+    error_message: string | null;
+    recorded_at: string;
+  }[];
+};
+
+const phase5State = ref<LoadState>("idle");
+const phase5Error = ref("");
+const jobHealth = ref<JobHealth | null>(null);
+const connectorHealth = ref<ConnectorHealth | null>(null);
+const freshness = ref<FreshnessStatus | null>(null);
+const usageMetrics = ref<UsageMetrics | null>(null);
+const runFilesState = ref<LoadState>("idle");
+const runFilesError = ref("");
+const runFiles = ref<FileProgressRecord[]>([]);
+const selectedFile = ref<FileProgressRecord | null>(null);
+const selectedTimeline = ref<FileTimelineResponse | null>(null);
+const deadLetterCount = ref(0);
+const progressFilters = reactive({
+  runId: "",
+  stage: "",
+  status: "",
+  sourceId: "",
+  fromDate: "",
+  toDate: "",
+});
+const progressStream = ref<EventSource | null>(null);
+const progressStreamRunId = ref<number | null>(null);
 
 const canSubmitChat = computed(() => chatForm.query.trim().length > 0);
 
@@ -113,11 +217,155 @@ async function completeOnboarding(): Promise<void> {
     return;
   }
   await loadStatus();
+  await loadPhase5Widgets();
+  await loadRunFiles();
 }
 
 onMounted(async () => {
   await loadStatus();
+  if (status.value?.is_completed === true) {
+    await loadPhase5Widgets();
+    await loadRunFiles();
+  }
 });
+
+onBeforeUnmount(() => {
+  if (progressStream.value !== null) {
+    progressStream.value.close();
+  }
+  progressStream.value = null;
+  progressStreamRunId.value = null;
+});
+
+async function loadPhase5Widgets(): Promise<void> {
+  phase5State.value = "loading";
+  phase5Error.value = "";
+  try {
+    const [jobsResponse, connectorsResponse, freshnessResponse, usageResponse] = await Promise.all([
+      fetch("/status/jobs"),
+      fetch("/status/connectors"),
+      fetch("/status/freshness"),
+      fetch("/metrics/usage?days=7"),
+    ]);
+    if (!jobsResponse.ok || !connectorsResponse.ok || !freshnessResponse.ok || !usageResponse.ok) {
+      throw new Error("failed to load phase 5 status widgets");
+    }
+    jobHealth.value = (await jobsResponse.json()) as JobHealth;
+    connectorHealth.value = (await connectorsResponse.json()) as ConnectorHealth;
+    freshness.value = (await freshnessResponse.json()) as FreshnessStatus;
+    usageMetrics.value = (await usageResponse.json()) as UsageMetrics;
+    phase5State.value = "success";
+  } catch (error) {
+    phase5State.value = "error";
+    phase5Error.value = error instanceof Error ? error.message : "phase 5 metrics failed";
+  }
+}
+
+function resolveRunId(): number | null {
+  const raw = progressFilters.runId.trim();
+  if (raw.length > 0) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed) === false && parsed > 0) {
+      return parsed;
+    }
+  }
+  return jobHealth.value?.latest_run_id ?? null;
+}
+
+async function loadRunFiles(): Promise<void> {
+  runFilesState.value = "loading";
+  runFilesError.value = "";
+  selectedTimeline.value = null;
+  const runId = resolveRunId();
+  if (runId === null) {
+    runFilesState.value = "success";
+    runFiles.value = [];
+    if (progressStream.value !== null) {
+      progressStream.value.close();
+      progressStream.value = null;
+      progressStreamRunId.value = null;
+    }
+    return;
+  }
+  subscribeRunStream(runId);
+
+  const params = new URLSearchParams();
+  if (progressFilters.stage.trim().length > 0) {
+    params.set("stage", progressFilters.stage.trim());
+  }
+  if (progressFilters.status.trim().length > 0) {
+    params.set("status", progressFilters.status.trim());
+  }
+  if (progressFilters.sourceId.trim().length > 0) {
+    params.set("source_id", progressFilters.sourceId.trim());
+  }
+  if (progressFilters.fromDate.trim().length > 0) {
+    params.set("from_date", `${progressFilters.fromDate.trim()}T00:00:00Z`);
+  }
+  if (progressFilters.toDate.trim().length > 0) {
+    params.set("to_date", `${progressFilters.toDate.trim()}T23:59:59Z`);
+  }
+  params.set("limit", "200");
+
+  try {
+    const filesResponse = await fetch(`/runs/${runId}/files?${params.toString()}`);
+    const deadLetterResponse = await fetch("/status/dead-letter?limit=1");
+    if (!filesResponse.ok) {
+      throw new Error("failed to load run files");
+    }
+    const payload = (await filesResponse.json()) as RunFilesResponse;
+    runFiles.value = payload.files;
+    if (deadLetterResponse.ok) {
+      const dead = (await deadLetterResponse.json()) as { file_run_id: number }[];
+      deadLetterCount.value = dead.length;
+    }
+    runFilesState.value = "success";
+  } catch (error) {
+    runFilesError.value = error instanceof Error ? error.message : "run file load failed";
+    runFilesState.value = "error";
+  }
+}
+
+function subscribeRunStream(runId: number): void {
+  if (progressStreamRunId.value === runId && progressStream.value !== null) {
+    return;
+  }
+  if (progressStream.value !== null) {
+    progressStream.value.close();
+  }
+  const stream = new EventSource(`/runs/${runId}/stream`);
+  stream.addEventListener("progress", () => {
+    void loadRunFiles();
+  });
+  progressStream.value = stream;
+  progressStreamRunId.value = runId;
+}
+
+async function openFileTimeline(fileRow: FileProgressRecord): Promise<void> {
+  selectedFile.value = fileRow;
+  const response = await fetch(`/files/${fileRow.file_run_id}/timeline`);
+  if (!response.ok) {
+    runFilesError.value = "failed to load file timeline";
+    return;
+  }
+  selectedTimeline.value = (await response.json()) as FileTimelineResponse;
+}
+
+async function retryFile(fileRow: FileProgressRecord): Promise<void> {
+  const response = await fetch(`/files/${fileRow.file_run_id}/retry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requested_by: "dashboard" }),
+  });
+  if (!response.ok) {
+    runFilesError.value = "manual retry failed";
+    return;
+  }
+  await loadRunFiles();
+}
+
+const usageCurrency = computed(() => usageMetrics.value?.currency ?? "USD");
+const usageCost = computed(() => usageMetrics.value?.total_cost_amount ?? "0");
 
 function parseList(raw: string): string[] {
   return raw
@@ -168,7 +416,7 @@ async function runChatQuery(): Promise<void> {
   <main class="shell">
     <header class="topbar">
       <h1>Memory Evolutionary Agents</h1>
-      <span class="chip">Phase 4 Chat</span>
+      <span class="chip">Phase 6 Progress + Reliability</span>
     </header>
 
     <section v-if="loading" class="panel">
@@ -181,6 +429,117 @@ async function runChatQuery(): Promise<void> {
         <p>Onboarding completed. Chat and retrieval routes are enabled.</p>
         <p>Qdrant mode: {{ status.qdrant_mode }}</p>
         <p>Vault: {{ status.obsidian_vault_path }}</p>
+      </article>
+
+      <article class="panel">
+        <h2>Operational Status</h2>
+        <p v-if="phase5State === 'loading'" class="muted">Loading status cards...</p>
+        <p v-else-if="phase5State === 'error'" class="error">{{ phase5Error }}</p>
+        <div v-else-if="phase5State === 'success'" class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-label">runs</span>
+            <strong class="kpi-value">{{ jobHealth?.total_runs ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">failed runs</span>
+            <strong class="kpi-value">{{ jobHealth?.failed_runs ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">healthy sources</span>
+            <strong class="kpi-value">{{ connectorHealth?.healthy_sources ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card" :class="freshness?.is_stale === true ? 'kpi-stale' : ''">
+            <span class="kpi-label">freshness</span>
+            <strong class="kpi-value">
+              {{ freshness?.minutes_since_last_run ?? "-" }}m
+            </strong>
+          </div>
+          <div class="kpi-card full-kpi">
+            <span class="kpi-label">token usage (7d)</span>
+            <strong class="kpi-value">{{ usageMetrics?.total_tokens ?? 0 }}</strong>
+          </div>
+          <div class="kpi-card full-kpi">
+            <span class="kpi-label">cost (7d)</span>
+            <strong class="kpi-value">{{ usageCurrency }} {{ usageCost }}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel full-span">
+        <h2>File Progress</h2>
+        <div class="field-row">
+          <label>
+            Run ID (default latest)
+            <input v-model="progressFilters.runId" type="text" placeholder="latest run" />
+          </label>
+          <label>
+            Source ID
+            <input v-model="progressFilters.sourceId" type="text" placeholder="any" />
+          </label>
+        </div>
+        <div class="field-row">
+          <label>
+            Stage
+            <input v-model="progressFilters.stage" type="text" placeholder="failed | completed" />
+          </label>
+          <label>
+            Status
+            <input v-model="progressFilters.status" type="text" placeholder="queued | failed | success" />
+          </label>
+        </div>
+        <div class="field-row">
+          <label>
+            Date from
+            <input v-model="progressFilters.fromDate" type="date" />
+          </label>
+          <label>
+            Date to
+            <input v-model="progressFilters.toDate" type="date" />
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" @click="loadRunFiles">Refresh Files</button>
+          <span class="muted">dead-letter files: {{ deadLetterCount }}</span>
+        </div>
+        <p v-if="runFilesState === 'loading'" class="muted">Loading file progress...</p>
+        <p v-else-if="runFilesState === 'error'" class="error">{{ runFilesError }}</p>
+        <p v-else-if="runFiles.length === 0" class="muted">No files matched current filters.</p>
+        <table v-else class="progress-table">
+          <thead>
+            <tr>
+              <th>file</th>
+              <th>stage</th>
+              <th>status</th>
+              <th>error</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in runFiles" :key="item.file_run_id">
+              <td>{{ item.file_path }}</td>
+              <td>{{ item.stage }}</td>
+              <td>{{ item.status }}</td>
+              <td>{{ item.error_code ?? "-" }}</td>
+              <td class="row-actions">
+                <button type="button" @click="openFileTimeline(item)">Timeline</button>
+                <button type="button" :disabled="item.status === 'success'" @click="retryFile(item)">
+                  Retry
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel full-span" v-if="selectedTimeline !== null && selectedFile !== null">
+        <h2>File Timeline</h2>
+        <p class="muted">{{ selectedFile.file_path }}</p>
+        <ul>
+          <li v-for="event in selectedTimeline.events" :key="event.id">
+            {{ event.recorded_at }} | {{ event.from_stage ?? "-" }} -> {{ event.to_stage }} | {{ event.status }}
+            <span v-if="event.error_code !== null">| {{ event.error_code }}</span>
+          </li>
+        </ul>
       </article>
 
       <article class="panel">
@@ -229,6 +588,7 @@ async function runChatQuery(): Promise<void> {
 
       <article class="panel full-span" v-if="chatResponse !== null">
         <h2>Answer</h2>
+        <p class="muted">Request ID: {{ chatResponse.request_id ?? "-" }}</p>
         <pre class="answer">{{ chatResponse.answer }}</pre>
         <p>Confidence: {{ chatResponse.confidence.toFixed(2) }}</p>
         <h3>Citations</h3>
@@ -344,6 +704,45 @@ async function runChatQuery(): Promise<void> {
   padding: 16px;
 }
 
+.muted {
+  color: var(--muted);
+}
+
+.kpi-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.kpi-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--raised);
+}
+
+.kpi-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.kpi-value {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.full-kpi {
+  grid-column: 1 / -1;
+}
+
+.kpi-stale {
+  border-color: var(--accent-hover);
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -396,6 +795,25 @@ button:disabled {
 .actions {
   display: flex;
   gap: 10px;
+}
+
+.progress-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.progress-table th,
+.progress-table td {
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 8px;
+  vertical-align: top;
+}
+
+.row-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .answer {

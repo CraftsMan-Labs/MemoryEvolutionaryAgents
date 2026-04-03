@@ -9,11 +9,25 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Or via `make` shortcuts:
+
+```bash
+make rebuild
+```
+
 Services:
 - API: `http://localhost:8000`
 - Dashboard: `http://localhost:5173`
 - Qdrant: `http://localhost:6333`
 - Postgres: `localhost:5432`
+
+Useful make targets:
+- `make up`
+- `make down`
+- `make build`
+- `make rebuild`
+- `make migrate`
+- `make logs`
 
 ## Quick Start
 
@@ -44,6 +58,7 @@ uv run python -m memory_evolutionary_agents.worker
 - `MEA_DB_PATH`: sqlite path for local development (default `./memory_agents.db`)
 - `MEA_SCAN_INTERVAL_SECONDS`: scan cadence in seconds (default `300`, min `60`)
 - `MEA_SCAN_CYCLE_TIMEOUT_SECONDS`: max scan-cycle execution budget (default `240`, min `30`)
+- `MEA_STAGE_TIMEOUT_SECONDS`: per-stage workflow timeout in seconds (default `90`, min `5`)
 - `MEA_MASTER_KEY`: Fernet-compatible key used to encrypt connector secrets at rest
 - `MEA_DATABASE_URL`: Postgres DSN used for Phase 2 canonical memory persistence
 - `MEA_PHASE2_ENABLED`: enables Phase 2 YAML workflow ingestion execution (`true`/`false`)
@@ -120,6 +135,10 @@ After onboarding is completed, protected routes are available:
 - `GET /status/jobs`
 - `POST /jobs/scan`
 - `GET /runs/{run_id}/files`
+- `GET /files/{file_id}/timeline`
+- `POST /files/{file_id}/retry`
+- `GET /runs/{run_id}/stream`
+- `GET /status/dead-letter`
 - `GET /ontology/proposals`
 - `GET /ontology/proposals/{proposal_id}`
 - `POST /ontology/proposals/{proposal_id}/approve`
