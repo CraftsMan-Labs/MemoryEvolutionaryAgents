@@ -42,6 +42,8 @@ class IncrementalScanner:
         for file_path in source_root.rglob("*"):
             if file_path.is_file() is False:
                 continue
+            if _is_ignored_path(source_root, file_path):
+                continue
             try:
                 stat_result = file_path.stat()
                 content_hash = _hash_file(file_path)
@@ -62,3 +64,11 @@ class IncrementalScanner:
                 errors.append(f"{file_path}: {exc}")
 
         return ScanResult(snapshots=snapshots, errors=errors)
+
+
+def _is_ignored_path(source_root: Path, file_path: Path) -> bool:
+    try:
+        relative = file_path.relative_to(source_root)
+    except ValueError:
+        return False
+    return any(part.startswith(".") for part in relative.parts)
