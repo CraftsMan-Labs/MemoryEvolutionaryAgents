@@ -1,0 +1,57 @@
+id: ontology-evolution-v1
+version: 1.0.0
+entry_node: collect_candidates
+
+nodes:
+  - id: collect_candidates
+    node_type:
+      custom_worker:
+        handler: collect_candidates
+        handler_file: ../src/memory_evolutionary_agents/phase3/workflow_handlers.py
+    config:
+      payload:
+        project: "{{ input.project }}"
+        entities: "{{ input.entities }}"
+        tags: "{{ input.tags }}"
+
+  - id: normalize_candidates
+    node_type:
+      custom_worker:
+        handler: normalize_candidates
+        handler_file: ../src/memory_evolutionary_agents/phase3/workflow_handlers.py
+    config:
+      output_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          ontology_candidates:
+            type: array
+            items:
+              type: string
+          taxonomy_candidates:
+            type: array
+            items:
+              type: string
+        required: [ontology_candidates, taxonomy_candidates]
+      payload:
+        ontology_candidates: "{{ nodes.collect_candidates.output.ontology_candidates }}"
+        taxonomy_candidates: "{{ nodes.collect_candidates.output.taxonomy_candidates }}"
+
+  - id: emit_ontology_globals
+    node_type:
+      custom_worker:
+        handler: emit_ontology_globals
+        handler_file: ../src/memory_evolutionary_agents/phase3/workflow_handlers.py
+    config:
+      payload:
+        ontology_candidates: "{{ nodes.normalize_candidates.output.ontology_candidates }}"
+        taxonomy_candidates: "{{ nodes.normalize_candidates.output.taxonomy_candidates }}"
+      set_globals:
+        ontology_candidates: nodes.normalize_candidates.output.ontology_candidates
+        taxonomy_candidates: nodes.normalize_candidates.output.taxonomy_candidates
+
+edges:
+  - from: collect_candidates
+    to: normalize_candidates
+  - from: normalize_candidates
+    to: emit_ontology_globals

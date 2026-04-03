@@ -1,0 +1,151 @@
+id: ingest-memory-v1
+version: 1.0.0
+entry_node: normalize_file
+
+nodes:
+  - id: normalize_file
+    node_type:
+      custom_worker:
+        handler: normalize_file
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        file_path: "{{ input.file_path }}"
+        file_content: "{{ input.file_content }}"
+
+  - id: extract_structured_memory
+    node_type:
+      llm_call:
+        model: gpt-4o-mini
+        stream: false
+        heal: true
+        temperature: 0.0
+    config:
+      output_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          project:
+            type: ["string", "null"]
+          problem:
+            type: ["string", "null"]
+          solution:
+            type: ["string", "null"]
+          date:
+            type: ["string", "null"]
+          confidence:
+            type: number
+        required: [project, problem, solution, date, confidence]
+      prompt: |
+        Extract structured memory from the document text.
+        Return JSON only.
+
+        Required fields:
+        - project (string|null)
+        - problem (string|null)
+        - solution (string|null)
+        - date (ISO string|null)
+        - confidence (0.0-1.0)
+
+        Document:
+        {{ nodes.normalize_file.output.document_text }}
+
+  - id: classify_memory
+    node_type:
+      llm_call:
+        model: gpt-4o-mini
+        stream: false
+        heal: true
+        temperature: 0.0
+    config:
+      output_schema:
+        type: object
+        additionalProperties: false
+        properties:
+          tags:
+            type: array
+            items:
+              type: string
+          entities:
+            type: array
+            items:
+              type: string
+          confidence:
+            type: number
+        required: [tags, entities, confidence]
+      prompt: |
+        Classify this memory into stable tags and entities.
+        Return JSON only.
+
+        Input:
+        {{ nodes.normalize_file.output.document_text }}
+
+  - id: chunk_document
+    node_type:
+      custom_worker:
+        handler: chunk_document
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        document_text: "{{ nodes.normalize_file.output.document_text }}"
+
+  - id: embed_chunks
+    node_type:
+      custom_worker:
+        handler: embed_chunks
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        chunks: "{{ nodes.chunk_document.output.chunks }}"
+
+  - id: upsert_qdrant
+    node_type:
+      custom_worker:
+        handler: upsert_qdrant
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        embeddings: "{{ nodes.embed_chunks.output.embeddings }}"
+
+  - id: write_obsidian_summary
+    node_type:
+      custom_worker:
+        handler: write_obsidian_summary
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        project: "{{ nodes.extract_structured_memory.output.project }}"
+        problem: "{{ nodes.extract_structured_memory.output.problem }}"
+        solution: "{{ nodes.extract_structured_memory.output.solution }}"
+        file_path: "{{ input.file_path }}"
+
+  - id: emit_telemetry
+    node_type:
+      custom_worker:
+        handler: emit_telemetry
+        handler_file: ../src/memory_evolutionary_agents/phase2/workflow_handlers.py
+    config:
+      payload:
+        correlation_id: "{{ input.correlation_id }}"
+        status: success
+      set_globals:
+        extraction: nodes.extract_structured_memory.output
+        classification: nodes.classify_memory.output
+        qdrant_point_ids: nodes.upsert_qdrant.output.qdrant_point_ids
+        obsidian_note_path: nodes.write_obsidian_summary.output.obsidian_note_path
+
+edges:
+  - from: normalize_file
+    to: extract_structured_memory
+  - from: extract_structured_memory
+    to: classify_memory
+  - from: classify_memory
+    to: chunk_document
+  - from: chunk_document
+    to: embed_chunks
+  - from: embed_chunks
+    to: upsert_qdrant
+  - from: upsert_qdrant
+    to: write_obsidian_summary
+  - from: write_obsidian_summary
+    to: emit_telemetry

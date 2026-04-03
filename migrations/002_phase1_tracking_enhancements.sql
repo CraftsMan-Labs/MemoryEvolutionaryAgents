@@ -1,0 +1,8 @@
+ALTER TABLE sources
+  ADD COLUMN IF NOT EXISTS last_scan_file_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE sources
+  ADD COLUMN IF NOT EXISTS last_scan_error_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE file_processing_runs
+  ADD COLUMN IF NOT EXISTS error_code TEXT;
